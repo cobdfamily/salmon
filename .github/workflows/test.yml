@@ -1,0 +1,30 @@
+name: test
+
+# salmon's tests stub the Ipmi class so they don't shell
+# out to a real ipmitool. Pure pytest, no docker, no live
+# BMC needed -- runs on every push / PR / nightly.
+#
+# An e2e job that brings up the real container against a
+# simulated BMC (e.g. virtualbmc, sushy-tools, or a docker
+# image that fakes /dev/ipmi0) is on the roadmap; not in
+# v0.1.0.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "30 7 * * *"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - run: uv sync --frozen
+      - run: uv run pytest tests/ -v

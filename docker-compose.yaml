@@ -1,0 +1,46 @@
+# Local-dev / production-shape compose for salmon.
+#
+# Defaults to in-band mode: ipmitool talks to /dev/ipmi0
+# on the host. The host kernel needs the ``ipmi_devintf``
+# module loaded; the container needs the device passed
+# through via ``devices``. If your kernel uses udev to
+# create /dev/ipmi0 with a non-root group, you may need
+# ``user: "0:0"`` to grant access -- pick the access path
+# that matches your host's permissions model.
+#
+# For remote-BMC mode, leave the device passthrough off
+# and set SALMON_BMC_HOST / SALMON_BMC_USER /
+# SALMON_BMC_PASSWORD instead. salmon will use ``ipmitool
+# -I lanplus -H -U -P`` and not touch /dev/ipmi0.
+#
+# Override SALMON_TAG to pin a specific version.
+
+services:
+  salmon:
+    image: kibble.apps.blindhub.ca/cobdfamily/salmon:${SALMON_TAG:-latest}
+    container_name: salmon
+    ports:
+      - "${SALMON_HTTP_PORT:-8000}:8000"
+    environment:
+      SALMON_SYSTEM_ID: ${SALMON_SYSTEM_ID:-1}
+      SALMON_SYSTEM_NAME: ${SALMON_SYSTEM_NAME:-system-1}
+      SALMON_BMC_HOST: ${SALMON_BMC_HOST:-}
+      SALMON_BMC_USER: ${SALMON_BMC_USER:-}
+      SALMON_BMC_PASSWORD: ${SALMON_BMC_PASSWORD:-}
+      SALMON_BMC_INTERFACE: ${SALMON_BMC_INTERFACE:-}
+      SALMON_CACHE_TTL: ${SALMON_CACHE_TTL:-10}
+    # In-band mode: pass the host's BMC device through.
+    # Comment this block out for remote-BMC deployments.
+    devices:
+      - /dev/ipmi0:/dev/ipmi0
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/', timeout=2).status==200 else 1)"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
