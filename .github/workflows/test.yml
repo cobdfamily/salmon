@@ -1,13 +1,21 @@
 name: test
 
-# salmon's tests stub the Ipmi class so they don't shell
-# out to a real ipmitool. Pure pytest, no docker, no live
-# BMC needed -- runs on every push / PR / nightly.
+# Two CI jobs:
 #
-# An e2e job that brings up the real container against a
-# simulated BMC (e.g. virtualbmc, sushy-tools, or a docker
-# image that fakes /dev/ipmi0) is on the roadmap; not in
-# v0.1.0.
+#   unit  -- stubbed Ipmi class, pure pytest, no docker.
+#            tests/test_redfish.py.
+#   e2e   -- builds the docker image, boots it WITHOUT a
+#            real /dev/ipmi0 passthrough, and exercises the
+#            HTTP surface. The container's ipmitool calls
+#            all fail -> salmon's degrade-gracefully paths
+#            kick in (PowerState: Unknown, empty sensor
+#            arrays, 502 on actions). tests/test_e2e.py.
+#
+# A richer e2e against a simulated real BMC (virtualbmc,
+# ipmi-sim, or sushy-tools) is on the roadmap; for now the
+# value of the e2e is verifying the container actually
+# boots and the HTTP surface holds up against unreachable
+# IPMI -- which is the most-common real-world failure mode.
 
 on:
   push:
@@ -19,7 +27,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
+  unit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -27,4 +35,78 @@ jobs:
         with:
           version: "latest"
       - run: uv sync --frozen
-      - run: uv run pytest tests/ -v
+      - run: uv run pytest tests/test_redfish.py -v
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: [unit]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: configure docker for plain-HTTP kibble registry
+        # salmon's Dockerfile uses upstream python:3.12-slim
+        # (not a kibble image), so this isn't strictly
+        # required for the build itself -- but mirroring the
+        # other workspace services keeps the workflow
+        # uniform and lets a future kibble base image swap
+        # not need a workflow change.
+        run: |
+          sudo mkdir -p /etc/docker
+          echo '{"insecure-registries":["kibble.apps.blindhub.ca"]}' \
+            | sudo tee /etc/docker/daemon.json >/dev/null
+          sudo systemctl restart docker
+          for i in $(seq 1 30); do
+            docker info >/dev/null 2>&1 && break
+            sleep 1
+          done
+
+      - name: set up buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: build image (loaded into local docker)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          platforms: linux/amd64
+          tags: salmon-e2e:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: run salmon (no BMC; ipmitool will fail by design)
+        run: |
+          docker run -d --name salmon-e2e \
+            -p 8000:8000 \
+            salmon-e2e:latest
+
+      - name: wait for salmon ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/ >/dev/null 2>&1; then
+              echo "salmon ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::salmon failed to come up in 60s"
+          docker logs salmon-e2e
+          exit 1
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - run: uv sync --frozen
+
+      - name: run E2E tests against the live container
+        run: uv run pytest tests/test_e2e.py -v
+        env:
+          SALMON_BASE_URL: http://127.0.0.1:8000
+
+      - name: dump container logs on failure
+        if: failure()
+        run: docker logs salmon-e2e
+
+      - name: tear down
+        if: always()
+        run: docker rm -f salmon-e2e || true
