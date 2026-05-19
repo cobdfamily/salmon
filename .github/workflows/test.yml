@@ -30,7 +30,7 @@ jobs:
   unit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
@@ -42,7 +42,7 @@ jobs:
     needs: [unit]
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: configure docker for plain-HTTP kibble registry
         # salmon's Dockerfile uses upstream python:3.12-slim
