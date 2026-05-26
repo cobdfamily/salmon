@@ -1,0 +1,61 @@
+#!/bin/sh
+# Emits the thermal subset of `ipmitool sensor list` as
+# a Redfish Thermal.v1 JSON envelope: { Temperatures:
+# [...], Fans: [...] }.
+#
+# We use a small python pipeline because `ipmitool
+# sensor list` is pipe-separated with quirky padding
+# and Redfish's TitleCase shape would be a chore to
+# build with awk. Python ships in the runtime image
+# already (it's how FastAPI / url2code load), so no
+# extra dep.
+#
+# Filter rule:
+#   "degrees C" units  -> Temperatures
+#   "RPM" units        -> Fans
+# Everything else (Volts, Watts, status flags) is left
+# for ipmi-sensors-power.
+set -eu
+
+. /app/bin/ipmi-env
+
+ipmitool $IPMITOOL_AUTH sensor list | /usr/local/bin/python3 -c '
+import json, sys
+
+temps = []
+fans  = []
+for line in sys.stdin:
+    parts = [p.strip() for p in line.split("|")]
+    if len(parts) < 4:
+        continue
+    name, value, unit, status = parts[0], parts[1], parts[2], parts[3]
+    # ipmitool emits "na" / "0x0" for sensors that
+    # arent populated; drop those so the Redfish
+    # arrays only show real readings.
+    if value in ("na", "0x0", ""):
+        continue
+    try:
+        reading = float(value)
+    except ValueError:
+        continue
+    member_id = name.replace(" ", "_").replace("/", "_")
+    if "degrees C" in unit:
+        temps.append({
+            "@odata.id":          f"/redfish/v1/Chassis/1/Thermal#/Temperatures/{member_id}",
+            "MemberId":           member_id,
+            "Name":               name,
+            "ReadingCelsius":     reading,
+            "Status":             {"State": "Enabled" if status == "ok" else "Disabled"},
+        })
+    elif "RPM" in unit:
+        fans.append({
+            "@odata.id":          f"/redfish/v1/Chassis/1/Thermal#/Fans/{member_id}",
+            "MemberId":           member_id,
+            "Name":               name,
+            "Reading":            reading,
+            "ReadingUnits":       "RPM",
+            "Status":             {"State": "Enabled" if status == "ok" else "Disabled"},
+        })
+
+json.dump({"Temperatures": temps, "Fans": fans}, sys.stdout)
+'

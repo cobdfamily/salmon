@@ -1,0 +1,36 @@
+#!/bin/sh
+# Reports the current BMC power state as JSON.
+#
+# Output shape:
+#
+#   { "PowerState": "On" | "Off" }
+#
+# Title-cased to match Redfish conventions directly --
+# the response template lifts this value into the
+# ComputerSystem JSON with no further translation.
+#
+# `ipmitool chassis power status` prints one of:
+#   Chassis Power is on
+#   Chassis Power is off
+#
+# Anything else (network failure, malformed BMC
+# response) exits non-zero so url2code surfaces a 502
+# rather than emitting a half-built ComputerSystem
+# envelope.
+set -eu
+
+. /app/bin/ipmi-env
+
+raw=$(ipmitool $IPMITOOL_AUTH chassis power status 2>&1)
+case "$raw" in
+    *"is on"*)   state="On" ;;
+    *"is off"*)  state="Off" ;;
+    *)
+        # Unparseable output is a 502 -- don't emit a
+        # PowerState we'd be guessing at.
+        echo "unrecognized ipmitool output: $raw" >&2
+        exit 1
+        ;;
+esac
+
+printf '{"PowerState":"%s"}\n' "$state"

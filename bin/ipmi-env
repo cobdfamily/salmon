@@ -1,0 +1,44 @@
+#!/bin/sh
+# Common auth-args helper. `eval` this file inside other
+# salmon shims to populate $IPMITOOL_AUTH with the right
+# CLI flags based on env:
+#
+#   - SALMON_BMC_HOST unset (or empty)
+#       -> in-band mode: ipmitool talks to /dev/ipmi0 on
+#          the container's host (needs `devices:
+#          /dev/ipmi0:/dev/ipmi0` in compose).
+#   - SALMON_BMC_HOST set
+#       -> remote mode: ipmitool -I lanplus -H ... -U ...
+#          -P ... talks to the BMC over the network. No
+#          device passthrough required; the container's
+#          egress reaches the BMC's network address.
+#
+# Why a sourced helper rather than a python wrapper:
+# salmon shells out to ipmitool four times per "give me
+# the system status" pass through Redfish; a python
+# startup per call would dominate the latency. POSIX sh
+# keeps the per-call cost in the low milliseconds.
+#
+# IPMITOOL_INTERFACE override is honoured if set
+# explicitly. Default for remote is lanplus (which is
+# what every modern BMC speaks); the legacy `lan`
+# interface remains available for ancient BMCs by
+# setting SALMON_BMC_INTERFACE=lan.
+set -eu
+
+IPMITOOL_AUTH=""
+if [ -n "${SALMON_BMC_HOST:-}" ]; then
+    interface="${SALMON_BMC_INTERFACE:-lanplus}"
+    IPMITOOL_AUTH="-I $interface -H $SALMON_BMC_HOST"
+    if [ -n "${SALMON_BMC_USER:-}" ]; then
+        IPMITOOL_AUTH="$IPMITOOL_AUTH -U $SALMON_BMC_USER"
+    fi
+    if [ -n "${SALMON_BMC_PASSWORD:-}" ]; then
+        # -E reads from the IPMI_PASSWORD env so the
+        # password doesn't appear in the process list.
+        IPMITOOL_AUTH="$IPMITOOL_AUTH -E"
+        IPMI_PASSWORD="$SALMON_BMC_PASSWORD"
+        export IPMI_PASSWORD
+    fi
+fi
+export IPMITOOL_AUTH

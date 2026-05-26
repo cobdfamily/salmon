@@ -1,0 +1,51 @@
+#!/bin/sh
+# Emits the power subset of `ipmitool sensor list` as a
+# Redfish Power.v1 JSON envelope: { Voltages: [...],
+# PowerSupplies: [...] }. Companion to
+# ipmi-sensors-thermal; same parsing strategy, different
+# unit filter.
+#
+# Filter rule:
+#   "Volts" units             -> Voltages
+#   "Watts" units, "PSU"/"PS" in name -> PowerSupplies
+# Everything else is left for ipmi-sensors-thermal.
+set -eu
+
+. /app/bin/ipmi-env
+
+ipmitool $IPMITOOL_AUTH sensor list | /usr/local/bin/python3 -c '
+import json, sys
+
+voltages = []
+psus     = []
+for line in sys.stdin:
+    parts = [p.strip() for p in line.split("|")]
+    if len(parts) < 4:
+        continue
+    name, value, unit, status = parts[0], parts[1], parts[2], parts[3]
+    if value in ("na", "0x0", ""):
+        continue
+    try:
+        reading = float(value)
+    except ValueError:
+        continue
+    member_id = name.replace(" ", "_").replace("/", "_")
+    if "Volts" in unit:
+        voltages.append({
+            "@odata.id":      f"/redfish/v1/Chassis/1/Power#/Voltages/{member_id}",
+            "MemberId":       member_id,
+            "Name":           name,
+            "ReadingVolts":   reading,
+            "Status":         {"State": "Enabled" if status == "ok" else "Disabled"},
+        })
+    elif "Watts" in unit and ("PSU" in name.upper() or name.upper().startswith("PS")):
+        psus.append({
+            "@odata.id":      f"/redfish/v1/Chassis/1/Power#/PowerSupplies/{member_id}",
+            "MemberId":       member_id,
+            "Name":           name,
+            "PowerInputWatts": reading,
+            "Status":         {"State": "Enabled" if status == "ok" else "Disabled"},
+        })
+
+json.dump({"Voltages": voltages, "PowerSupplies": psus}, sys.stdout)
+'

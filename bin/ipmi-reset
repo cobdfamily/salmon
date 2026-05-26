@@ -1,0 +1,57 @@
+#!/bin/sh
+# Translates a Redfish ResetType into the matching
+# `ipmitool chassis power` subcommand and runs it.
+#
+# Usage:
+#   ipmi-reset <ResetType>
+#
+# Where ResetType is one of the values url2code's enum
+# validation already permits (see config/tools.yaml's
+# power-action flag definition):
+#
+#   On                -> on
+#   ForceOn           -> on
+#   ForceOff          -> off
+#   GracefulShutdown  -> soft        (ACPI soft-off)
+#   GracefulRestart   -> soft        (no native graceful
+#                                     restart; closest)
+#   ForceRestart      -> reset
+#   PowerCycle        -> cycle
+#   Nmi               -> diag
+#
+# Output:
+#   { "ok": true, "ResetType": "<input>", "action": "<ipmi-verb>" }
+#
+# On ipmitool failure: non-zero exit + stderr; url2code
+# returns 502 with the stderr in the error body.
+set -eu
+
+. /app/bin/ipmi-env
+
+case "${1:-}" in
+    On)               action="on" ;;
+    ForceOn)          action="on" ;;
+    ForceOff)         action="off" ;;
+    GracefulShutdown) action="soft" ;;
+    GracefulRestart)  action="soft" ;;
+    ForceRestart)     action="reset" ;;
+    PowerCycle)       action="cycle" ;;
+    Nmi)              action="diag" ;;
+    "")
+        echo "missing ResetType argument" >&2
+        exit 2
+        ;;
+    *)
+        echo "unsupported ResetType: $1" >&2
+        exit 2
+        ;;
+esac
+
+# Run the action. ipmitool prints its own status line
+# ("Chassis Power Control: Up/On") which we surface in
+# stdout but don't parse -- the JSON we emit below is
+# what the response template reads.
+ipmitool $IPMITOOL_AUTH chassis power "$action"
+
+printf '{"ok":true,"ResetType":"%s","action":"%s"}\n' \
+    "$1" "$action"

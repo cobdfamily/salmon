@@ -1,47 +1,46 @@
-# Two-stage build: uv builds the venv from the lockfile;
-# runtime image is python:3.12-slim with the venv copied in
-# plus ipmitool installed via apt.
+# salmon -- url2code base image + ipmitool + the
+# bin/ shims + the YAML that declares the Redfish
+# surface. No Python source in this repo; the HTTP
+# surface is entirely defined in config/tools.yaml
+# which url2code reads on startup.
+#
+# Same shape as the other url2code-derived images
+# (brl, needle, outofoffice, pandoc).
 
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
+ARG URL2CODE_TAG=1.1.0
+FROM kibble.apps.blindhub.ca/cobdfamily/url2code:${URL2CODE_TAG}
 
-ENV UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy \
-    UV_PROJECT_ENVIRONMENT=/app/.venv
-
-WORKDIR /app
-
-COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --frozen --no-install-project --no-default-groups
-
-COPY src ./src
-RUN uv sync --frozen --no-default-groups
-
-
-FROM python:3.12-slim AS runtime
-
-# ipmitool is the CLI salmon shells out to. The apt package
-# pulls in the userland tool only -- no kernel modules
-# (those are on the host). For in-band usage the host needs
-# ipmi_devintf loaded; for remote usage neither host nor
-# container need the kernel side.
+# ipmitool is the CLI every bin/ shim shells out to.
+# Switch to root for the apt install, switch back to
+# the unprivileged runtime user url2code already
+# created for us.
+USER root
 RUN apt-get update -y \
  && apt-get install -y --no-install-recommends \
         ipmitool \
         ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd --system --gid 1000 salmon \
- && useradd --system --uid 1000 --gid 1000 \
-        --home /app --shell /sbin/nologin salmon
+# Drop in the YAML + the shims. /app is the url2code
+# working dir; tools.yaml at /app/config/tools.yaml
+# is what URL2CODE_CONFIG defaults to (matches brl
+# / needle / etc).
+COPY config /app/config
+COPY bin    /app/bin
+RUN chmod +x /app/bin/*
 
-WORKDIR /app
-COPY --from=builder --chown=salmon:salmon /app /app
+# Hand back to the url2code base image's runtime
+# user. The base image set its USER to url2code in
+# the runtime stage; the apt step above flipped to
+# root, so we flip back so the FastAPI process
+# inherits the unprivileged identity. The bin/
+# shims work as that user because /dev/ipmi0 (in-
+# band mode) is opened via the host's device
+# permissions, not the container user's.
+USER url2code
 
-ENV PATH="/app/.venv/bin:${PATH}" \
-    PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
-
-USER salmon
-EXPOSE 8000
-
-CMD ["uvicorn", "salmon.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Sanity check the YAML at build time -- a malformed
+# YAML would crash on first request; this fails the
+# build instead. url2code's load_config() does full
+# pydantic validation.
+RUN python -c "from url2code.config import load_config; load_config('/app/config/tools.yaml')"

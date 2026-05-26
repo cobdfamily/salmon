@@ -2,38 +2,55 @@
 
 [![test](https://github.com/cobdfamily/salmon/actions/workflows/test.yml/badge.svg)](https://github.com/cobdfamily/salmon/actions/workflows/test.yml)
 
-Redfish-flavoured HTTP facade for legacy IPMI BMCs via
-`ipmitool`. v0.1.0 -- single-host scope, power +
-sensors only. Designed for orchestrators (OpenStack
-Ironic, Foreman, Tinkerbell) and any tooling that
-prefers Redfish over IPMI on hardware that doesn't
-speak it natively.
+Redfish-flavoured HTTP facade for legacy IPMI BMCs.
+v0.2.0 reshaped from a hand-written FastAPI app into a
+[url2code](https://github.com/cobdfamily/url2code)
+project: the Redfish surface is declared in
+`config/tools.yaml` and a handful of `bin/ipmi-*`
+shell shims wrap `ipmitool`.
+
+> Deploying salmon in production? See
+> **[DEPLOYMENT.md](DEPLOYMENT.md)**.
 
 ## What it does
 
+Single-host scope: salmon represents one BMC. The
+Systems and Chassis collections always have exactly
+one member; its id is hardcoded to `"1"` in
+`config/tools.yaml::template_static`. Operators
+with a different naming convention edit the YAML
+at deploy time -- no rebuild required.
+
 ```
 GET  /                                              liveness (non-Redfish)
-GET  /redfish                                       version document
-GET  /redfish/v1/                                   ServiceRoot
+GET  /redfish                                       Redfish version doc
+GET  /redfish/v1                                    ServiceRoot
+GET  /redfish/v1/odata                              OData service doc
 GET  /redfish/v1/Systems                            ComputerSystemCollection
-GET  /redfish/v1/Systems/{id}                       ComputerSystem
-POST /redfish/v1/Systems/{id}/Actions/
-                       ComputerSystem.Reset         power actions
+GET  /redfish/v1/Systems/1                          ComputerSystem + PowerState
+POST /redfish/v1/Systems/1/Actions/
+                  ComputerSystem.Reset              power action
 GET  /redfish/v1/Chassis                            ChassisCollection
-GET  /redfish/v1/Chassis/{id}                       Chassis
-GET  /redfish/v1/Chassis/{id}/Power                 Voltages
-GET  /redfish/v1/Chassis/{id}/Thermal               Temperatures + Fans
+GET  /redfish/v1/Chassis/1                          Chassis
+GET  /redfish/v1/Chassis/1/Power                    Voltages + PowerSupplies
+GET  /redfish/v1/Chassis/1/Thermal                  Temperatures + Fans
 ```
 
-`{id}` is `SALMON_SYSTEM_ID` (default `1`). One BMC per
-salmon instance in v0.1.0; a multi-host facade is on
-the roadmap.
+`/redfish/v1/` (with trailing slash) returns a 307
+redirect to `/redfish/v1` -- url2code normalizes
+trailing slashes off route declarations. All Redfish
+clients that COBD operates against (Ironic, Foreman,
+Tinkerbell) follow 307 redirects, so this is
+behaviourally transparent. Strict clients that don't
+follow redirects should hit the no-trailing-slash
+form directly.
 
 ### ResetType actions
 
-POST `Actions/ComputerSystem.Reset` accepts a JSON body
-with a `ResetType`. salmon maps each to an `ipmitool
-chassis power ...` invocation:
+POST `Actions/ComputerSystem.Reset` accepts a JSON
+body with a `ResetType` field. The shim maps each
+Redfish value to an `ipmitool chassis power`
+subcommand:
 
 | ResetType        | ipmitool subcommand |
 |------------------|---------------------|
@@ -45,116 +62,107 @@ chassis power ...` invocation:
 | PowerCycle       | cycle               |
 | Nmi              | diag                |
 
-## Quick start (local in-band)
+## What changed in 0.2.0
+
+The HTTP surface and JSON shapes are unchanged --
+this is a pure reshape of the implementation. The
+table summarises what moved:
+
+| 0.1.x                              | 0.2.0                          |
+|------------------------------------|--------------------------------|
+| `src/salmon/main.py` (FastAPI app) | `config/tools.yaml` + url2code |
+| `src/salmon/ipmi.py` (subprocess)  | `bin/ipmi-*` POSIX sh shims    |
+| Redfish JSON built in handlers     | url2code response templates    |
+| Per-endpoint pydantic models       | Static JSON literals in YAML   |
+
+Net effect: ~300 lines of Python collapsed into one
+YAML file and four shell shims totalling ~150 lines.
+The Redfish translation (`ipmitool chassis power
+status` -> `"PowerState": "On"`) lives in the shims;
+the wrapper JSON (OData ids, types, action targets)
+lives in YAML response templates.
+
+## Quick start (in-band)
 
 ```sh
 docker compose up -d
-# ipmitool talks to /dev/ipmi0 by default; the host
-# kernel needs the ipmi_devintf module loaded and the
-# container needs --privileged or device passthrough
-# (see DEPLOYMENT.md).
-
-curl -s http://localhost:8000/redfish/v1/ | jq
-
-curl -s http://localhost:8000/redfish/v1/Systems/1 \
-  | jq '.PowerState'
-
-curl -X POST -H 'Content-Type: application/json' \
-  -d '{"ResetType": "GracefulShutdown"}' \
-  http://localhost:8000/redfish/v1/Systems/1/Actions/ComputerSystem.Reset
+curl -s http://localhost:8000/redfish/v1/Systems/1 | jq .
 ```
+
+Requires `/dev/ipmi0` on the host (`modprobe
+ipmi_devintf` if missing) and the compose file's
+`devices:` block pointing the container at it.
 
 ## Quick start (remote BMC)
 
 ```sh
-docker run -d --name salmon \
-  -e SALMON_BMC_HOST=10.0.0.42 \
-  -e SALMON_BMC_USER=admin \
-  -e SALMON_BMC_PASSWORD=admin \
-  -p 8000:8000 \
-  kibble.apps.blindhub.ca/cobdfamily/salmon:latest
+export SALMON_BMC_HOST=10.0.0.42
+export SALMON_BMC_USER=admin
+export SALMON_BMC_PASSWORD='changeme'
+# Comment out the `devices:` block in
+# docker-compose.yaml first.
+docker compose up -d
+curl -s http://localhost:8000/redfish/v1/Systems/1 | jq .
 ```
 
 ## Configuration
 
-All via environment variables; see
-[`src/salmon/config.py`](src/salmon/config.py):
+| Var                     | Default     | Meaning                                  |
+|-------------------------|-------------|------------------------------------------|
+| `SALMON_BMC_HOST`       | (unset)     | If set, remote mode; else in-band.       |
+| `SALMON_BMC_USER`       | (unset)     | BMC username for remote mode.            |
+| `SALMON_BMC_PASSWORD`   | (unset)     | Passed via `IPMI_PASSWORD` so it doesn't appear in `ps`. |
+| `SALMON_BMC_INTERFACE`  | `lanplus`   | ipmitool interface for remote mode (`lanplus` or `lan`). |
 
-- `SALMON_SYSTEM_ID`     -- id used in `/Systems/<id>` and
-                            `/Chassis/<id>`. Default `1`.
-- `SALMON_SYSTEM_NAME`   -- human-readable name. Default
-                            `system-1`.
-- `SALMON_BMC_HOST`      -- if set, drive a remote BMC at
-                            this host. Otherwise local
-                            `/dev/ipmi0`.
-- `SALMON_BMC_USER` /
-  `SALMON_BMC_PASSWORD`  -- required when `SALMON_BMC_HOST`
-                            is set.
-- `SALMON_BMC_INTERFACE` -- `ipmitool -I` value. Default
-                            `lanplus` (remote) or `open`
-                            (local).
-- `SALMON_CACHE_TTL`     -- seconds to cache slow sensor
-                            reads. Default `10`. `0`
-                            disables caching.
+To change the System / Chassis id from the default
+`"1"`, edit `config/tools.yaml::template_static.id`
+in each endpoint that has it.
 
-## What's NOT in v0.1.0
+## How the templates work
 
-- **SessionService / X-Auth-Token.** Endpoints are
-  unauthenticated. Gate at the reverse proxy.
-- **Bios resource** (boot order, settings).
-- **EthernetInterfaces, NetworkAdapters, Storage,
-  Drives, Volumes, Memory, Processors.**
-- **Per-sensor endpoints under
-  `/Chassis/<id>/Sensors/<n>`.** Voltages /
-  Temperatures / Fans are exposed via Power and
-  Thermal collections only.
-- **PowerSupplies and PowerControl.** IPMI doesn't
-  surface PSU composition reliably; left as `[]` until
-  SDR FRU parsing lands.
-- **Multi-host orchestration.** One BMC per instance.
-- **Strict spec validation.** salmon emits JSON shaped
-  for Ironic-class consumers; DMTF protocol-validator
-  conformance is a follow-up.
+Every endpoint in `config/tools.yaml` declares an
+`output.template` that produces the Redfish JSON
+shape. Two kinds of endpoint:
 
-## Architecture
+  - **Static-only.** `command.executable: /bin/true`
+    + a template with no `{parsed_output.*}`
+    references. Used for ServiceRoot, the OData
+    document, and the collection envelopes.
+  - **ipmitool-backed.** `command.executable:
+    /app/bin/ipmi-<thing>` + a template that
+    references `{parsed_output.X}`. The shim
+    emits a small JSON blob; the template wraps it
+    in Redfish boilerplate.
 
-```
-HTTP request
-   |
-   v
-FastAPI route          (src/salmon/main.py)
-   |
-   v
-Ipmi.run / run_cached  (src/salmon/ipmi.py)
-   |
-   v
-asyncio subprocess
-   |
-   v
-ipmitool CLI
-   |
-   v
-BMC (in-band /dev/ipmi0 OR remote -H -U -P)
+See [url2code's README](https://github.com/cobdfamily/url2code#response-templates)
+for the full templating spec.
+
+## Run tests
+
+There are no Python tests in this repo any more --
+the original FastAPI test suite was retired with the
+hand-coded handlers. End-to-end coverage is provided
+by `docker compose up -d` against a real (or
+remote) BMC and `curl` against the Redfish surface.
+Operators with a target BMC can run:
+
+```sh
+# Cycle the whole Redfish surface once.
+for path in \
+    /redfish /redfish/v1 /redfish/v1/odata \
+    /redfish/v1/Systems /redfish/v1/Systems/1 \
+    /redfish/v1/Chassis /redfish/v1/Chassis/1 \
+    /redfish/v1/Chassis/1/Power \
+    /redfish/v1/Chassis/1/Thermal ; do
+  echo "=== $path ==="
+  curl -fsS "http://localhost:8000$path" | jq .
+done
 ```
 
-Cache layer is in-process, TTL-keyed, only on
-sensor-list reads. Power-state queries are fast and
-uncached. Action calls are never cached.
+A v0.3.0 sprint will add a CI test suite that runs
+against a mock-ipmitool wrapper -- the same shape
+brl / needle / pandoc use.
 
-## Files
+## Licence
 
-```
-src/salmon/__init__.py        package marker + version
-src/salmon/main.py            FastAPI app + Redfish routes
-src/salmon/config.py          env-var loader
-src/salmon/ipmi.py            ipmitool subprocess + cache
-tests/                        pytest suite
-Dockerfile                    python:3.12-slim + ipmitool
-docker-compose.yaml           local-dev / production-shape
-.github/workflows/test.yml    CI: yaml + e2e jobs (+ nightly)
-.github/workflows/release.yml CI: tag-driven multi-arch push
-```
-
-## License
-
-AGPL-3.0 -- see `LICENSE`.
+AGPL-3.0. See [LICENSE](./LICENSE).

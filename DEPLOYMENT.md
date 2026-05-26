@@ -1,187 +1,96 @@
 # Deployment
 
-salmon ships as a container image to the kibble
-registry on every `git tag v*`. Built on
-`python:3.12-slim` + `ipmitool` (apt). Two deployment
-shapes:
+salmon 0.2.0 ships as a container image to the
+kibble registry on every `git tag v*`. Built on the
+url2code 1.1.0 base image + `ipmitool` (apt) + the
+bin/ shims + the YAML.
 
-- **In-band**: salmon runs on the host that has the
-  BMC, talking to `/dev/ipmi0` directly.
-- **Remote**: salmon runs anywhere; it drives a remote
-  BMC over the network via ipmitool's lanplus mode.
-
-## Pre-flight checklist (in-band)
-
-- [ ] Host kernel has `ipmi_devintf` loaded
-      (`lsmod | grep ipmi_devintf`; `modprobe
-      ipmi_devintf` if not).
-- [ ] `/dev/ipmi0` exists and is readable by either
-      root or a group salmon's user can join.
-- [ ] Container has device passthrough --
-      `--device /dev/ipmi0:/dev/ipmi0` on docker run,
-      or the `devices:` block in docker-compose.yaml.
-- [ ] Public hostname for salmon (e.g.
-      `bmc-1.cobd.ca`) with an A record. The service
-      speaks plain HTTP on `:8000` behind your
-      reverse proxy / TLS terminator.
-
-## Pre-flight checklist (remote)
-
-- [ ] BMC reachable at the configured IP from
-      whatever runs salmon. IPMI port: 623/UDP.
-- [ ] BMC user has the right privilege level
-      (Operator for power actions; User for sensors).
-- [ ] Credentials available in env vars (don't
-      hardcode in compose; use a secret store or
-      `--env-file`).
-
-## Image distribution
-
-`.github/workflows/release.yml` builds and pushes the
-image on every `git tag v*`:
+## Build + tag
 
 ```sh
-git tag -a v0.1.0 -m "Release 0.1.0"
-git push origin v0.1.0
+docker build \
+  -t kibble.apps.blindhub.ca/cobdfamily/salmon:0.2.0 \
+  -t kibble.apps.blindhub.ca/cobdfamily/salmon:latest \
+  .
+docker push kibble.apps.blindhub.ca/cobdfamily/salmon:0.2.0
+docker push kibble.apps.blindhub.ca/cobdfamily/salmon:latest
 ```
 
-Within a couple of minutes:
+The Dockerfile sanity-checks the YAML at build time
+via `url2code.config.load_config('/app/config/
+tools.yaml')`, so a malformed YAML fails the build
+rather than crashing the first request.
 
-- `kibble.apps.blindhub.ca/cobdfamily/salmon:0.1.0`
-- `kibble.apps.blindhub.ca/cobdfamily/salmon:latest`
+## Two deployment shapes
 
-Multi-arch (amd64 + arm64).
+### In-band
 
-## No built-in auth
+salmon talks to `/dev/ipmi0` on the container host.
+Requires:
 
-salmon has **no auth** in v0.1.0. Power actions can
-reboot machines; gate at your reverse proxy:
-
-```nginx
-location / {
-    if ($http_x_api_key != "$SALMON_API_KEY") {
-        return 401;
-    }
-    proxy_pass http://127.0.0.1:8000;
-    proxy_read_timeout 60s;
-}
-```
-
-For the openapis.ca marketplace shape, see
-`infra/docs/auth-strategy.md` in the workspace root.
-A Redfish-native SessionService is on the roadmap.
-
-## Run (in-band)
-
-```yaml
-# /opt/salmon/docker-compose.yaml
-services:
-  salmon:
-    image: kibble.apps.blindhub.ca/cobdfamily/salmon:0.1.0
-    container_name: salmon
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:8000:8000"
-    devices:
-      - /dev/ipmi0:/dev/ipmi0
-    environment:
-      SALMON_SYSTEM_ID: "1"
-      SALMON_SYSTEM_NAME: "rack-7-node-3"
-```
+- The host kernel has `ipmi_devintf` loaded
+  (`modprobe ipmi_devintf` if missing).
+- `docker-compose.yaml` passes the device through
+  with `devices: [/dev/ipmi0:/dev/ipmi0]`.
+- The container's runtime user (`url2code`) can
+  open `/dev/ipmi0`. Most distributions allow this
+  via the `dialout` / `disk` group; if not, you can
+  flip the compose `user: "0:0"` for root access.
 
 ```sh
-mkdir -p /opt/salmon
-cd /opt/salmon
-docker compose pull
 docker compose up -d
-docker compose logs -f salmon
+curl -s http://localhost:8000/redfish/v1/Systems/1
 ```
 
-## Run (remote)
+### Remote
 
-```yaml
-services:
-  salmon:
-    image: kibble.apps.blindhub.ca/cobdfamily/salmon:0.1.0
-    container_name: salmon
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:8000:8000"
-    environment:
-      SALMON_BMC_HOST: "10.20.30.42"
-      SALMON_BMC_USER: "admin"
-      SALMON_BMC_PASSWORD: "${BMC_PASSWORD}"
-      SALMON_SYSTEM_ID: "1"
-      SALMON_SYSTEM_NAME: "rack-7-node-3"
-```
-
-Pass `BMC_PASSWORD` via `--env-file` or your secret
-store; don't commit it.
-
-## Verify
+salmon talks to the BMC over the network using
+`ipmitool -I lanplus -H <ip> -U <user> -P <pass>`.
+The `bin/ipmi-env` helper picks up the env vars and
+assembles the auth args. The password is exported
+via `IPMI_PASSWORD` so it doesn't appear in the
+container's process list.
 
 ```sh
-curl -fsS http://127.0.0.1:8000/                  # liveness
-curl -fsS http://127.0.0.1:8000/redfish/v1/ | jq  # ServiceRoot
-
-curl -fsS http://127.0.0.1:8000/redfish/v1/Systems/1 \
-  | jq '.PowerState'
-
-curl -fsS http://127.0.0.1:8000/redfish/v1/Chassis/1/Thermal \
-  | jq '.Temperatures, .Fans'
-
-curl -fsS -X POST -H 'Content-Type: application/json' \
-  -d '{"ResetType": "GracefulShutdown"}' \
-  http://127.0.0.1:8000/redfish/v1/Systems/1/Actions/ComputerSystem.Reset
+SALMON_BMC_HOST=10.0.0.42 \
+SALMON_BMC_USER=admin \
+SALMON_BMC_PASSWORD='changeme' \
+docker compose up -d
 ```
 
-## Troubleshooting
+Comment out the `devices:` block in
+`docker-compose.yaml` for remote mode -- the
+container doesn't need /dev/ipmi0 passed in.
 
-### `PowerState: Unknown`
+## Health checks
 
-salmon returns `Unknown` instead of erroring when
-ipmitool fails on a read path. Check the container
-logs for the ipmitool stderr. Common causes:
+- `GET /` (JSON liveness) returns
+  `{"service":"salmon","status":"ok","version":"0.2.0"}`.
+  url2code's auto-registered liveness handler.
+- The compose healthcheck hits `/` every 5s.
 
-- in-band: `/dev/ipmi0` not passed through, or
-  permission denied (the salmon user isn't in the
-  device's group).
-- remote: BMC unreachable, wrong credentials, or
-  the BMC has lanplus disabled.
+## Observability
 
-### Action returns 502
+- url2code emits structured JSON logs on every
+  endpoint call -- success, parse failure, CLI
+  failure, timeout. Pipe `docker logs salmon` into
+  your log aggregator.
+- Each Redfish endpoint logs the rendered `ipmitool`
+  command + the exit code; ipmitool failures show up
+  as a 502 with the stderr in the response body, so
+  the failure mode is visible both in the response
+  and in the logs.
 
-salmon maps non-zero ipmitool exits to HTTP 502 on
-action endpoints. The response body's `detail` field
-carries the captured stderr.
+## Upgrades
 
-## Routine operations
+`docker compose pull && docker compose up -d` is
+idempotent. Pin `SALMON_TAG=0.2.0` in production;
+`:latest` moves whenever a new release is cut.
 
-### Upgrading
+To roll back, set `SALMON_TAG` to the prior version
+and re-run. salmon is stateless -- no migration, no
+data loss.
 
-```sh
-git tag -a v0.1.1 -m "Release 0.1.1"
-git push origin v0.1.1
-sed -i 's|salmon:[^ ]*|salmon:0.1.1|' docker-compose.yaml
-docker compose pull
-docker compose up -d --no-deps salmon
-```
+## License
 
-### Caching tuning
-
-`SALMON_CACHE_TTL` controls how long salmon caches
-slow ipmitool reads (`sensor list`). Default 10s;
-0 disables caching.
-
-### Backups
-
-Nothing to back up. Persist your env-file (BMC
-credentials) wherever you keep secrets.
-
-## What's NOT in v0.1.0
-
-See README.md "What's NOT in v0.1.0" for the full
-list. Highlights: SessionService, Bios, Storage,
-EthernetInterfaces, PowerSupplies, per-sensor
-endpoints, multi-host orchestration, strict-spec
-DMTF protocol-validator conformance.
+AGPL-3.0. See [LICENSE](./LICENSE).
