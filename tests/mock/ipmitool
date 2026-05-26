@@ -1,0 +1,75 @@
+#!/bin/sh
+# Mock ipmitool for salmon's CI suite. Replaces
+# /usr/bin/ipmitool inside the test image and emits
+# canned output that the bin/ipmi-* shims can parse
+# back into the same JSON shapes a real BMC would
+# produce. Lets the e2e suite run on any CI runner
+# without /dev/ipmi0 or a network-reachable BMC.
+#
+# Subcommands covered:
+#
+#   chassis power status     -> "Chassis Power is on"
+#   chassis power <verb>     -> "Chassis Power Control: ..."
+#   sensor list              -> representative SDR rows
+#
+# Everything else exits non-zero with a noisy message
+# so an accidentally-uncovered code path surfaces as
+# a CI failure rather than a silent miss.
+
+set -eu
+
+# Skip past the auth flags ipmitool would honor
+# (-I, -H, -U, -E, -P) so we look at the verb the
+# bin/ shims actually care about. The shims set
+# IPMITOOL_AUTH = "" in CI (SALMON_BMC_HOST is
+# never set by the test compose), so in practice
+# the args start at the subcommand -- but be
+# defensive in case the test config changes.
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -I|-H|-U|-P) shift 2 ;;
+        -E|-h|-v)    shift ;;
+        --) shift; break ;;
+        -*) shift ;;          # unknown flag, skip arg
+        *) break ;;
+    esac
+done
+
+cmd="${1:-}"
+sub="${2:-}"
+verb="${3:-}"
+
+case "$cmd $sub $verb" in
+    "chassis power status")
+        echo "Chassis Power is on"
+        ;;
+    "chassis power on"|"chassis power off"|\
+    "chassis power cycle"|"chassis power reset"|\
+    "chassis power soft"|"chassis power diag")
+        # Real ipmitool prints things like "Chassis
+        # Power Control: Up/On" or "Reset". The
+        # exact text isn't parsed by bin/ipmi-reset
+        # -- success is the zero exit code.
+        echo "Chassis Power Control: $verb"
+        ;;
+    "sensor list "*|"sensor list")
+        # Representative SDR rows. Pipe-separated,
+        # padded the way ipmitool actually pads.
+        # Includes one of each shape the shims look
+        # for: temperature, fan, voltage, PSU watt,
+        # and a "na" reading the parser should drop.
+        cat <<'EOF'
+CPU1 Temp        | 35.000      | degrees C  | ok    | na    | na    | na    | 91.000    | 95.000    | 99.000
+CPU2 Temp        | na          | degrees C  | ns    | na    | na    | na    | 91.000    | 95.000    | 99.000
+Fan1             | 4200.000    | RPM        | ok    | na    | na    | 600.000 | na      | na        | na
+Fan2             | 4150.000    | RPM        | ok    | na    | na    | 600.000 | na      | na        | na
++12V             | 12.180      | Volts      | ok    | na    | 10.800  | 11.400 | na      | 12.600    | 13.200
++5V              | 5.020       | Volts      | ok    | na    | 4.500   | 4.750  | na      | 5.250     | 5.500
+PSU1 Input Power | 240.000     | Watts      | ok    | na    | na    | na    | na      | na        | na
+EOF
+        ;;
+    *)
+        echo "mock-ipmitool: unsupported invocation: $*" >&2
+        exit 2
+        ;;
+esac

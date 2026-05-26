@@ -139,29 +139,34 @@ for the full templating spec.
 
 ## Run tests
 
-There are no Python tests in this repo any more --
-the original FastAPI test suite was retired with the
-hand-coded handlers. End-to-end coverage is provided
-by `docker compose up -d` against a real (or
-remote) BMC and `curl` against the Redfish surface.
-Operators with a target BMC can run:
+Two layers, both runnable locally:
 
 ```sh
-# Cycle the whole Redfish surface once.
-for path in \
-    /redfish /redfish/v1 /redfish/v1/odata \
-    /redfish/v1/Systems /redfish/v1/Systems/1 \
-    /redfish/v1/Chassis /redfish/v1/Chassis/1 \
-    /redfish/v1/Chassis/1/Power \
-    /redfish/v1/Chassis/1/Thermal ; do
-  echo "=== $path ==="
-  curl -fsS "http://localhost:8000$path" | jq .
-done
+# 1. Structural YAML checks (no docker).
+python3 -m venv .venv-tests
+.venv-tests/bin/pip install -r tests/requirements.txt
+.venv-tests/bin/pytest tests/test_config.py -v
+
+# 2. End-to-end against a mocked-ipmitool container.
+docker build -t kibble.apps.blindhub.ca/cobdfamily/salmon:latest .
+docker build -f Dockerfile.test -t salmon:test .
+docker compose -f docker-compose.test.yaml up -d
+.venv-tests/bin/pytest tests/test_e2e.py -v
+docker compose -f docker-compose.test.yaml down
 ```
 
-A v0.3.0 sprint will add a CI test suite that runs
-against a mock-ipmitool wrapper -- the same shape
-brl / needle / pandoc use.
+The e2e suite runs against a derived test image
+that swaps `tests/mock/ipmitool` in for
+`/usr/bin/ipmitool`. Canned `chassis power status`
+/ `sensor list` / action output -- byte-shape
+identical to a live BMC's, so the Redfish layer
+exercises identically.
+
+CI (GitHub Actions, see
+`.github/workflows/test.yml`) runs both layers on
+every push, on every PR, and nightly. The nightly
+cron catches `url2code:latest` base-image
+regressions.
 
 ## Licence
 

@@ -1,0 +1,32 @@
+# Test-image compose. Brings up salmon with the
+# mocked ipmitool in place of the real one. Used by
+# tests/test_e2e.py and by the CI workflow at
+# .github/workflows/test.yml.
+#
+# Differences from docker-compose.yaml:
+#
+#   - image is `salmon:test` (built locally from
+#     Dockerfile.test), not the kibble registry tag.
+#   - No `devices:` block -- the mock doesn't need
+#     /dev/ipmi0.
+#   - No SALMON_BMC_* env vars -- the mock ignores
+#     auth flags and runs identically in-band and
+#     remote-mode-shaped invocations.
+
+services:
+  salmon:
+    image: salmon:test
+    container_name: salmon-test
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/', timeout=2).status==200 else 1)"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    restart: "no"

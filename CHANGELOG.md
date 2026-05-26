@@ -4,6 +4,55 @@ All notable changes to salmon. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com); dates
 are ISO 8601 in UTC.
 
+## [0.3.0] -- 2026-05-26
+
+### Added
+
+- **CI test suite.** Two layers:
+  - `tests/test_config.py` -- structural checks on
+    `config/tools.yaml` (34 tests). Verifies every
+    expected endpoint is present, the
+    `ComputerSystem.Reset` enum matches the
+    `AllowableValues` advertised in the
+    ComputerSystem JSON, every `template_static.id`
+    agrees, ipmitool-backed endpoints invoke the
+    right shim, and `@odata.type` strings match the
+    Redfish spec. Runs without docker.
+  - `tests/test_e2e.py` -- end-to-end checks against
+    a running container (20 tests). Walks the whole
+    Redfish surface: liveness, version doc,
+    ServiceRoot, OData doc, both collections,
+    ComputerSystem with `PowerState` reading through
+    the mock, every `ResetType` -> ipmitool verb
+    mapping, Chassis, Thermal (CPU temp + fans),
+    Power (voltages + PSU watts).
+
+- **Mocked ipmitool for CI.** `tests/mock/ipmitool`
+  is a small POSIX sh script that emits canned
+  `chassis power status` / `sensor list` /
+  `chassis power <verb>` output. `Dockerfile.test`
+  copies it over `/usr/bin/ipmitool` in a derived
+  test image so the e2e suite runs on any CI runner
+  without `/dev/ipmi0` or a network-reachable BMC.
+
+- **GitHub Actions workflow** at
+  `.github/workflows/test.yml`. Two jobs:
+  yaml (fast, runs config tests directly) ->
+  e2e (builds salmon + test image via buildx +
+  gha cache, brings up the stack via
+  `docker-compose.test.yaml`, runs pytest). Nightly
+  cron catches `url2code:latest` base-image
+  regressions.
+
+### Fixed
+
+- `bin/ipmi-reset` no longer leaks ipmitool's
+  status-line text ("Chassis Power Control: ...")
+  into stdout. The line is redirected to stderr so
+  url2code's `native_json` parser sees only the
+  JSON the shim itself emits. Without this fix, the
+  Reset action returned 502 for every ResetType.
+
 ## [0.2.0] -- 2026-05-26
 
 ### Changed (reshape, no wire-protocol break)

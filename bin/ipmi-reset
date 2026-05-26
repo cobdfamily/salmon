@@ -48,10 +48,12 @@ case "${1:-}" in
 esac
 
 # Run the action. ipmitool prints its own status line
-# ("Chassis Power Control: Up/On") which we surface in
-# stdout but don't parse -- the JSON we emit below is
-# what the response template reads.
-ipmitool $IPMITOOL_AUTH chassis power "$action"
+# ("Chassis Power Control: Up/On") which we redirect
+# to stderr -- url2code surfaces stderr in the
+# structured log, but stdout has to be JSON alone for
+# the native_json parser. Otherwise the leading
+# status-line text breaks json.loads().
+ipmitool $IPMITOOL_AUTH chassis power "$action" >&2
 
 printf '{"ok":true,"ResetType":"%s","action":"%s"}\n' \
     "$1" "$action"

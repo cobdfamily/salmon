@@ -1,0 +1,24 @@
+# Test image. Extends the real salmon image and
+# swaps a canned-output mock in for /usr/bin/ipmitool
+# so the e2e suite runs in CI without /dev/ipmi0 or a
+# network-reachable BMC.
+#
+# Build:
+#   docker build -f Dockerfile.test \
+#     -t salmon:test .
+#
+# Run (compose):
+#   docker compose -f docker-compose.test.yaml up -d
+#
+# The mock lives at tests/mock/ipmitool and is
+# copied over the apt-installed binary at the same
+# path. salmon's bin/ shims don't know they're
+# talking to a fake.
+
+ARG SALMON_BUILD_TAG=latest
+FROM kibble.apps.blindhub.ca/cobdfamily/salmon:${SALMON_BUILD_TAG}
+
+USER root
+COPY tests/mock/ipmitool /usr/bin/ipmitool
+RUN chmod +x /usr/bin/ipmitool
+USER url2code

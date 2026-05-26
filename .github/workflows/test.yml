@@ -1,56 +1,55 @@
 name: test
 
-# Two CI jobs:
+# salmon has no Python source -- the HTTP surface is
+# entirely defined in config/tools.yaml. CI runs:
 #
-#   unit  -- stubbed Ipmi class, pure pytest, no docker.
-#            tests/test_redfish.py.
-#   e2e   -- builds the docker image, boots it WITHOUT a
-#            real /dev/ipmi0 passthrough, and exercises the
-#            HTTP surface. The container's ipmitool calls
-#            all fail -> salmon's degrade-gracefully paths
-#            kick in (PowerState: Unknown, empty sensor
-#            arrays, 502 on actions). tests/test_e2e.py.
+#   - tests/test_config.py: structural checks on the
+#     YAML so a careless edit can't ship a malformed
+#     config that only surfaces at container start.
+#   - tests/test_e2e.py: brings up the locally-built
+#     test image (Dockerfile.test = salmon + mocked
+#     ipmitool) and walks the whole Redfish surface
+#     via the canned responses.
 #
-# A richer e2e against a simulated real BMC (virtualbmc,
-# ipmi-sim, or sushy-tools) is on the roadmap; for now the
-# value of the e2e is verifying the container actually
-# boots and the HTTP surface holds up against unreachable
-# IPMI -- which is the most-common real-world failure mode.
+# No real BMC required -- the mock replaces
+# /usr/bin/ipmitool with a shell script that emits
+# canned chassis-power / sensor-list output. Identical
+# JSON shapes to a live BMC; runs anywhere docker runs.
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  # Nightly catches a url2code:latest base-image
+  # regression -- without waiting for the next push.
   schedule:
     - cron: "30 7 * * *"
   workflow_dispatch:
 
 jobs:
-  unit:
+  yaml:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v5
-        with:
-          version: "latest"
-      - run: uv sync --frozen
-      - run: uv run pytest tests/test_redfish.py -v
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - run: python3 -m pip install -r tests/requirements.txt
+      - run: python3 -m pytest tests/test_config.py -v
 
   e2e:
     runs-on: ubuntu-latest
-    needs: [unit]
+    needs: [yaml]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
 
       - name: configure docker for plain-HTTP kibble registry
-        # salmon's Dockerfile uses upstream python:3.12-slim
-        # (not a kibble image), so this isn't strictly
-        # required for the build itself -- but mirroring the
-        # other workspace services keeps the workflow
-        # uniform and lets a future kibble base image swap
-        # not need a workflow change.
+        # salmon's Dockerfile pulls cobdfamily/url2code
+        # from kibble. The kibble registry speaks plain
+        # HTTP; the runner's docker daemon defaults to
+        # HTTPS-only, so flag kibble as insecure before
+        # any pull.
         run: |
           sudo mkdir -p /etc/docker
           echo '{"insecure-registries":["kibble.apps.blindhub.ca"]}' \
@@ -63,50 +62,69 @@ jobs:
 
       - name: set up buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          buildkitd-config-inline: |
+            [registry."kibble.apps.blindhub.ca"]
+              http = true
+              insecure = true
 
-      - name: build image (loaded into local docker)
+      - name: build base image (loaded into local docker)
+        # The "real" salmon image, tagged so
+        # Dockerfile.test's FROM can pull it locally
+        # rather than reaching out to kibble for a
+        # not-yet-published tag.
         uses: docker/build-push-action@v6
         with:
           context: .
           push: false
           load: true
           platforms: linux/amd64
-          tags: salmon-e2e:latest
+          tags: kibble.apps.blindhub.ca/cobdfamily/salmon:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: run salmon (no BMC; ipmitool will fail by design)
-        run: |
-          docker run -d --name salmon-e2e \
-            -p 8000:8000 \
-            salmon-e2e:latest
+      - name: build test image
+        # Test image extends the base, swaps in the
+        # mocked ipmitool. Tagged `salmon:test` to
+        # match docker-compose.test.yaml.
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.test
+          push: false
+          load: true
+          platforms: linux/amd64
+          tags: salmon:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: wait for salmon ready
+      - name: bring up stack
+        run: docker compose -f docker-compose.test.yaml up -d
+
+      - name: wait for liveness
         run: |
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8000/ >/dev/null 2>&1; then
-              echo "salmon ready"; exit 0
+            if curl -fsS http://localhost:8000/ >/dev/null 2>&1; then
+              echo "salmon up"
+              exit 0
             fi
-            sleep 2
+            sleep 1
           done
-          echo "::error::salmon failed to come up in 60s"
-          docker logs salmon-e2e
+          echo "salmon failed to come up" >&2
+          docker compose -f docker-compose.test.yaml logs
           exit 1
 
-      - uses: astral-sh/setup-uv@v5
-        with:
-          version: "latest"
-      - run: uv sync --frozen
+      - name: install python test deps
+        run: |
+          python3 -m pip install -r tests/requirements.txt
 
-      - name: run E2E tests against the live container
-        run: uv run pytest tests/test_e2e.py -v
-        env:
-          SALMON_BASE_URL: http://127.0.0.1:8000
+      - name: run e2e tests
+        run: python3 -m pytest tests/test_e2e.py -v
 
       - name: dump container logs on failure
         if: failure()
-        run: docker logs salmon-e2e
+        run: docker compose -f docker-compose.test.yaml logs
 
       - name: tear down
         if: always()
-        run: docker rm -f salmon-e2e || true
+        run: docker compose -f docker-compose.test.yaml down -v
