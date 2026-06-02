@@ -7,12 +7,14 @@
 # Same shape as the other url2code-derived images
 # (brl, needle, outofoffice, pandoc).
 
-# Pinned to 1.7.0: salmon 1.0.0's multi-host surface needs route
-# path-parameter support (the `{id}` segment exposed to commands as
-# `{id}` and to templates as `{request.id}`), which landed in
-# url2code 1.7.0. 1.7.0 is proper multi-arch and a superset of the
+# Pinned to 2.1.0 (current engine GA). salmon's multi-host surface
+# needs route path-parameter support (the `{id}` segment exposed to
+# commands as `{id}` and to templates as `{request.id}`), which
+# landed in url2code 1.7.0; 2.1.0 is a superset of that plus the
 # response-templating salmon's Redfish surface has always relied on.
-ARG URL2CODE_TAG=1.7.0
+# 2.0.0 is a breaking engine release (subprocess timeout/cancellation
+# edge-cases may shift) — certify against the e2e suite before tagging.
+ARG URL2CODE_TAG=2.1.0
 FROM kibble.apps.blindhub.ca/cobdfamily/url2code:${URL2CODE_TAG}
 
 # ipmitool is the CLI every bin/ shim shells out to.

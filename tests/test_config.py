@@ -60,7 +60,7 @@ def test_api_version_matches_changelog(cfg) -> None:
     """api.version is what GET / reports. Pin it to
     the SemVer string the CHANGELOG calls out; keeps
     a release from shipping with a stale version."""
-    assert cfg["api"]["version"] == "1.0.1"
+    assert cfg["api"]["version"] == "1.0.2"
 
 
 # ---------------------------------------------------
