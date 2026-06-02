@@ -4,6 +4,26 @@ All notable changes to salmon. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com); dates
 are ISO 8601 in UTC.
 
+## [0.3.1] -- 2026-06-01
+
+### Fixed
+
+- **Release SBOM now actually attaches.** `release.yml` (and the
+  removed standalone `sbom.yml`) used the uv / `cyclonedx-py`
+  environment path, which scans a Python `.venv` — but salmon is
+  a YAML-only repo with no `pyproject` / venv, so no usable SBOM
+  was ever produced or attached to the image. Switched to scanning
+  the built image with **syft** (`anchore/sbom-action`), matching
+  the rest of the fleet's YAML-only consumers (brl, needle,
+  outofoffice, pandoc). The standalone `sbom.yml` workflow (which
+  failed on every push for the same reason) is removed; the SBOM
+  is attached at release time and scanned daily by the shared
+  `cve-scan` workflow.
+
+### Changed
+
+- `api.version` `0.3.0 -> 0.3.1`.
+
 ## [0.3.0] -- 2026-05-26
 
 ### Added
