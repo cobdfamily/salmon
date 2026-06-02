@@ -6,6 +6,8 @@ are ISO 8601 in UTC.
 
 ## [Unreleased]
 
+## [1.0.2] -- 2026-06-01
+
 ### Changed
 
 - Base image `1.7.0 -> 2.1.0`, bringing salmon onto the current
@@ -15,7 +17,8 @@ are ISO 8601 in UTC.
   size caps (1.3.0), the readiness probe + graceful drain (1.4.0),
   `/metrics` (1.5.0), and OTel tracing (1.6.0). 2.0.0 is a breaking
   engine release (subprocess timeout/cancellation edge-cases may
-  shift) — certify against the e2e suite before tagging.
+  shift) — certified against the e2e suite (CI).
+- `api.version` `1.0.1 -> 1.0.2`.
 
 ## [1.0.1] -- 2026-06-01
 
@@ -213,6 +216,7 @@ over `ipmitool`. See git history for the complete
 0.1.x feature set; it lives at tag `v0.1.0` on the
 repo.
 
+[1.0.2]: https://github.com/cobdfamily/salmon/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/cobdfamily/salmon/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/cobdfamily/salmon/compare/v0.3.1...v1.0.0
 [0.3.1]: https://github.com/cobdfamily/salmon/compare/v0.3.0...v0.3.1
