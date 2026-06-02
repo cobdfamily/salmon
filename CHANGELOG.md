@@ -4,6 +4,19 @@ All notable changes to salmon. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com); dates
 are ISO 8601 in UTC.
 
+## [Unreleased]
+
+### Changed
+
+- Base image `1.7.0 -> 2.1.0`, bringing salmon onto the current
+  engine GA. 1.7.0's route path-parameter support (the multi-host
+  `{id}` routing salmon depends on) is preserved; the bump also picks
+  up the async executor (2.0.0), streamed I/O (2.1.0), rate limiting +
+  size caps (1.3.0), the readiness probe + graceful drain (1.4.0),
+  `/metrics` (1.5.0), and OTel tracing (1.6.0). 2.0.0 is a breaking
+  engine release (subprocess timeout/cancellation edge-cases may
+  shift) — certify against the e2e suite before tagging.
+
 ## [1.0.1] -- 2026-06-01
 
 ### Fixed
