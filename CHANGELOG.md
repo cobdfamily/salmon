@@ -23,6 +23,11 @@ are ISO 8601 in UTC.
 ### Changed
 
 - `api.version` `0.3.0 -> 0.3.1`.
+- Pinned the url2code base image `1.1.0 -> 1.6.0`. The old 1.1.0
+  base was published arm64-only in kibble, which broke salmon's
+  multi-arch release build and its amd64 CI build; 1.6.0 is proper
+  multi-arch and a superset of the response-templating salmon
+  relies on.
 
 ## [0.3.0] -- 2026-05-26
 

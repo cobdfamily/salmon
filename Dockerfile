@@ -7,7 +7,11 @@
 # Same shape as the other url2code-derived images
 # (brl, needle, outofoffice, pandoc).
 
-ARG URL2CODE_TAG=1.1.0
+# Pinned to 1.6.0: 1.1.0 (the prior pin) was published arm64-only
+# in kibble, which breaks the multi-arch release build and the
+# amd64 CI build. 1.6.0 is proper multi-arch and a superset of the
+# 1.1.0 response-templating salmon's Redfish surface relies on.
+ARG URL2CODE_TAG=1.6.0
 FROM kibble.apps.blindhub.ca/cobdfamily/url2code:${URL2CODE_TAG}
 
 # ipmitool is the CLI every bin/ shim shells out to.
