@@ -1,0 +1,60 @@
+# salmon BMC inventory -- the source of truth for which
+# BMCs salmon fronts and how to reach each one.
+#
+# This is a LIST of members. Each member's `id` becomes
+# the Redfish resource id: it's the `{id}` path segment
+# in /redfish/v1/Systems/{id} and /redfish/v1/Chassis/{id},
+# and every member listed here shows up in the Systems and
+# Chassis collection envelopes (built dynamically by
+# bin/ipmi-collection from this file).
+#
+# Per-member fields:
+#
+#   id        (required) Redfish member id. String. Must be
+#             URL-safe -- it lands in the route path. Keep it
+#             simple ("1", "node-a", "rack3-bmc7").
+#   host      (optional) BMC network address. If set, salmon
+#             reaches this member in REMOTE mode
+#             (ipmitool -I lanplus -H <host> -U <user> -E).
+#             OMIT it for IN-BAND mode (ipmitool -I open against
+#             the container's /dev/ipmi0) and set interface: open.
+#   user      BMC username (remote mode only).
+#   password  BMC password (remote mode only). bin/ipmi-env
+#             passes this via the IPMI_PASSWORD env + ipmitool's
+#             -E flag so it NEVER appears in the process list /
+#             `ps` output.
+#   interface ipmitool interface. `lanplus` (default for remote;
+#             what every modern BMC speaks; `lan` for ancient
+#             ones) or `open` (in-band, /dev/ipmi0).
+#
+# This baked-in default ships ONE in-band member (id "1") so the
+# image works single-host out of the box -- talk to the host's
+# /dev/ipmi0 with no credentials. In PRODUCTION, replace this with
+# your real inventory by mounting it READ-ONLY over this file from
+# a secret store, e.g. in docker-compose.yaml:
+#
+#   volumes:
+#     - ./bmcs.yaml:/app/config/bmcs.yaml:ro
+#
+# The credentials live in the mounted file -- operators source it
+# from their secret store. There is NO separate secrets mechanism:
+# passwords live here, and this file is what you protect. A clean
+# break from the single-host SALMON_BMC_* env model salmon used
+# through 0.3.x.
+#
+# Example multi-host inventory (uncomment + adapt, or mount your
+# own):
+#
+#   - id: "1"
+#     host: 10.0.0.11
+#     user: admin
+#     password: changeme
+#     interface: lanplus
+#   - id: "2"
+#     host: 10.0.0.12
+#     user: admin
+#     password: changeme2
+#     interface: lanplus
+
+- id: "1"
+  interface: open

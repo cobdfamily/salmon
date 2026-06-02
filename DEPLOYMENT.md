@@ -1,18 +1,26 @@
 # Deployment
 
-salmon 0.2.0 ships as a container image to the
-kibble registry on every `git tag v*`. Built on the
-url2code 1.1.0 base image + `ipmitool` (apt) + the
-bin/ shims + the YAML.
+salmon ships as a container image to the kibble
+registry on every `git tag v*`. Built on the url2code
+1.7.0 base image (path-param support, required by the
+multi-host surface) + `ipmitool` (apt) + the bin/
+shims + the YAML.
+
+As of 1.0.0 salmon is **multi-host**: the BMCs it
+fronts and their credentials live in
+`config/bmcs.yaml` (a list of members keyed by Redfish
+`id`), not in environment variables. The image bakes
+in a single in-band example member (id `"1"`); real
+deployments mount their own inventory over it.
 
 ## Build + tag
 
 ```sh
 docker build \
-  -t kibble.apps.blindhub.ca/cobdfamily/salmon:0.2.0 \
+  -t kibble.apps.blindhub.ca/cobdfamily/salmon:1.0.0 \
   -t kibble.apps.blindhub.ca/cobdfamily/salmon:latest \
   .
-docker push kibble.apps.blindhub.ca/cobdfamily/salmon:0.2.0
+docker push kibble.apps.blindhub.ca/cobdfamily/salmon:1.0.0
 docker push kibble.apps.blindhub.ca/cobdfamily/salmon:latest
 ```
 
@@ -23,10 +31,42 @@ rather than crashing the first request.
 
 ## Two deployment shapes
 
-### In-band
+A member's mode is per-entry in `bmcs.yaml`: a member
+with a `host` is remote, one without is in-band. A
+mixed inventory is fine.
 
-salmon talks to `/dev/ipmi0` on the container host.
-Requires:
+### BMC inventory + credentials
+
+Each member in `bmcs.yaml`:
+
+```yaml
+- id: "1"                # Redfish id / {id} route segment (required)
+  host: 10.0.0.11        # omit for in-band
+  user: admin            # remote mode
+  password: changeme     # remote mode; via IPMI_PASSWORD + -E, never argv
+  interface: lanplus     # lanplus | lan | open (in-band)
+```
+
+`bin/ipmi-env` resolves the request's `{id}` against
+this file; `bin/ipmi-collection` builds the Systems /
+Chassis collection Members from it. An unknown id is a
+502.
+
+The passwords live in this file -- there is no
+separate secrets mechanism. **Mount it read-only** from
+your secret store rather than baking creds into the
+image:
+
+```yaml
+# docker-compose.yaml
+volumes:
+  - ./bmcs.yaml:/app/config/bmcs.yaml:ro
+```
+
+### In-band members
+
+A member with no `host` (set `interface: open`) talks
+to `/dev/ipmi0` on the container host. Requires:
 
 - The host kernel has `ipmi_devintf` loaded
   (`modprobe ipmi_devintf` if missing).
@@ -37,35 +77,34 @@ Requires:
   via the `dialout` / `disk` group; if not, you can
   flip the compose `user: "0:0"` for root access.
 
+The baked-in default inventory is a single in-band
+member (id `"1"`), so `docker compose up -d` works out
+of the box for a single local host:
+
 ```sh
 docker compose up -d
 curl -s http://localhost:8000/redfish/v1/Systems/1
 ```
 
-### Remote
+### Remote members
 
-salmon talks to the BMC over the network using
-`ipmitool -I lanplus -H <ip> -U <user> -P <pass>`.
-The `bin/ipmi-env` helper picks up the env vars and
-assembles the auth args. The password is exported
+A member with a `host` is reached over the network via
+`ipmitool -I <interface> -H <host> -U <user> -E`. The
+`bin/ipmi-env` helper reads the member from `bmcs.yaml`
+and assembles the auth args; the password is exported
 via `IPMI_PASSWORD` so it doesn't appear in the
 container's process list.
 
-```sh
-SALMON_BMC_HOST=10.0.0.42 \
-SALMON_BMC_USER=admin \
-SALMON_BMC_PASSWORD='changeme' \
-docker compose up -d
-```
-
-Comment out the `devices:` block in
-`docker-compose.yaml` for remote mode -- the
-container doesn't need /dev/ipmi0 passed in.
+If your inventory is all-remote, comment out the
+`devices:` block in `docker-compose.yaml` -- the
+container doesn't need /dev/ipmi0 passed in. The
+single-host `SALMON_BMC_*` env vars are gone as of
+1.0.0; put those values in `bmcs.yaml`.
 
 ## Health checks
 
 - `GET /` (JSON liveness) returns
-  `{"service":"salmon","status":"ok","version":"0.2.0"}`.
+  `{"service":"salmon","status":"ok","version":"1.0.0"}`.
   url2code's auto-registered liveness handler.
 - The compose healthcheck hits `/` every 5s.
 
@@ -84,7 +123,7 @@ container doesn't need /dev/ipmi0 passed in.
 ## Upgrades
 
 `docker compose pull && docker compose up -d` is
-idempotent. Pin `SALMON_TAG=0.2.0` in production;
+idempotent. Pin `SALMON_TAG=1.0.0` in production;
 `:latest` moves whenever a new release is cut.
 
 To roll back, set `SALMON_TAG` to the prior version

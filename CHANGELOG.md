@@ -4,6 +4,51 @@ All notable changes to salmon. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com); dates
 are ISO 8601 in UTC.
 
+## [1.0.0] -- 2026-06-01
+
+### Changed (multi-host)
+
+- **salmon now represents N BMCs, not one.** The single
+  hardcoded member (id `"1"`) is replaced by an inventory in
+  `config/bmcs.yaml`: a YAML list of members, each keyed by its
+  Redfish `id`. That id is the `{id}` path segment in
+  `/redfish/v1/Systems/{id}` and `/redfish/v1/Chassis/{id}` (and
+  the sub-resources). REQUIRES url2code **>= 1.7.0** for route
+  path-parameter support.
+- **Path-param routes.** The five per-member endpoints
+  (`computer-system`, `computer-system-reset`, `chassis`,
+  `chassis-power`, `chassis-thermal`) moved from the literal
+  `/1` to `/{id}`. The captured id is validated as `text`,
+  echoed into the response templates as `{request.id}`, and
+  passed to the ipmitool shims as their first command arg.
+- **Dynamic collections.** `/redfish/v1/Systems` and
+  `/redfish/v1/Chassis` now list every member in `bmcs.yaml`
+  instead of a single static member. A new shim
+  `bin/ipmi-collection` reads the inventory and emits the
+  `Members` array + `count`, which the collection templates lift
+  whole (`native_json` mode).
+- **Per-BMC credentials from a mounted file.** `bin/ipmi-env`
+  resolves the id against `bmcs.yaml` (via url2code's runtime
+  PyYAML, the brl `bin/brl-translate` pattern) and assembles the
+  ipmitool connection args: remote (`-I <interface> -H <host>
+  -U <user>` + `IPMI_PASSWORD`/`-E`) when the member has a
+  `host`, in-band (`-I open`) when it doesn't. The password
+  still travels via the env, never argv. The single-host
+  `SALMON_BMC_*` env-var model is gone -- creds live in the
+  mounted file, sourced from the operator's secret store.
+- **Base image** pinned `1.6.0 -> 1.7.0` (path-param support).
+- `api.version` `0.3.1 -> 1.0.0`.
+
+### Migration
+
+The image bakes in a single in-band example member (id `"1"`),
+so an in-band single-host deployment keeps working out of the
+box. For multiple or remote BMCs, write a `bmcs.yaml` (see the
+documented format in the baked-in `config/bmcs.yaml`) and mount
+it read-only over `/app/config/bmcs.yaml`. Operators that set
+`SALMON_BMC_HOST` / `_USER` / `_PASSWORD` must move those values
+into the file -- the env vars are no longer read.
+
 ## [0.3.1] -- 2026-06-01
 
 ### Fixed
@@ -135,3 +180,9 @@ Initial release. Hand-written FastAPI Redfish facade
 over `ipmitool`. See git history for the complete
 0.1.x feature set; it lives at tag `v0.1.0` on the
 repo.
+
+[1.0.0]: https://github.com/cobdfamily/salmon/compare/v0.3.1...v1.0.0
+[0.3.1]: https://github.com/cobdfamily/salmon/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/cobdfamily/salmon/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/cobdfamily/salmon/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/cobdfamily/salmon/releases/tag/v0.1.0

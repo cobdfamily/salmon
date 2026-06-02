@@ -20,13 +20,19 @@ Coverage:
   /redfish                            version doc
   /redfish/v1                         ServiceRoot
   /redfish/v1/odata                   OData service doc
-  /redfish/v1/Systems                 ComputerSystemCollection
+  /redfish/v1/Systems                 ComputerSystemCollection (2 members)
   /redfish/v1/Systems/1               ComputerSystem (PowerState from mock)
   POST .../Actions/ComputerSystem.Reset   each ResetType
-  /redfish/v1/Chassis                 ChassisCollection
+  /redfish/v1/Chassis                 ChassisCollection (2 members)
   /redfish/v1/Chassis/1               Chassis
   /redfish/v1/Chassis/1/Power         Voltages + PowerSupplies
   /redfish/v1/Chassis/1/Thermal       Temperatures + Fans
+  /redfish/v1/Systems/999             unknown id -> non-2xx
+
+The test image bakes in tests/bmcs.yaml: a two-member
+in-band inventory (ids "1" and "2"). So the collections
+list two members; per-member paths for id "1" exercise the
+mocked ipmitool; an unknown id resolves to a non-2xx.
 """
 
 from __future__ import annotations
@@ -107,18 +113,22 @@ def test_odata_service_document() -> None:
 
 
 @pytest.mark.parametrize(
-    "path,member_id",
+    "path",
     [
-        ("/redfish/v1/Systems", "/redfish/v1/Systems/1"),
-        ("/redfish/v1/Chassis", "/redfish/v1/Chassis/1"),
+        "/redfish/v1/Systems",
+        "/redfish/v1/Chassis",
     ],
 )
-def test_collection_has_one_member(path: str, member_id: str) -> None:
+def test_collection_lists_both_members(path: str) -> None:
+    """The collections are built dynamically from bmcs.yaml.
+    The test inventory has two members (ids "1" and "2"), so
+    the count is 2 and both member links are present."""
     r = requests.get(SALMON_BASE_URL + path, timeout=5)
     assert r.status_code == 200
     body = r.json()
-    assert body["Members@odata.count"] == 1
-    assert body["Members"] == [{"@odata.id": member_id}]
+    assert body["Members@odata.count"] == 2
+    member_ids = {m["@odata.id"] for m in body["Members"]}
+    assert member_ids == {path + "/1", path + "/2"}
 
 
 # ---------------------------------------------------
@@ -201,6 +211,23 @@ def test_reset_action_rejects_unknown_type() -> None:
         timeout=5,
     )
     assert r.status_code == 400
+
+
+# ---------------------------------------------------
+# Unknown member id
+# ---------------------------------------------------
+
+
+def test_unknown_member_id_is_not_2xx() -> None:
+    """An id that isn't in bmcs.yaml has no BMC to resolve.
+    ipmi-env exits non-zero, so url2code surfaces a non-2xx
+    (502) rather than a half-built ComputerSystem."""
+    r = requests.get(
+        SALMON_BASE_URL + "/redfish/v1/Systems/999", timeout=10,
+    )
+    assert not (200 <= r.status_code < 300), (
+        f"unknown id should not be 2xx, got {r.status_code}"
+    )
 
 
 # ---------------------------------------------------

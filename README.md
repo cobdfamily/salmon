@@ -14,27 +14,32 @@ shell shims wrap `ipmitool`.
 
 ## What it does
 
-Single-host scope: salmon represents one BMC. The
-Systems and Chassis collections always have exactly
-one member; its id is hardcoded to `"1"` in
-`config/tools.yaml::template_static`. Operators
-with a different naming convention edit the YAML
-at deploy time -- no rebuild required.
+Multi-host (v1.0.0): salmon represents N BMCs. The
+BMCs it fronts -- and how to reach each one -- live in
+`config/bmcs.yaml`, a YAML list of members keyed by
+their Redfish `id`. That id is the `{id}` path segment
+below; the Systems and Chassis collections list every
+member in the file. See
+[BMC inventory](#bmc-inventory-bmcsyaml) for the format.
 
 ```
 GET  /                                              liveness (non-Redfish)
 GET  /redfish                                       Redfish version doc
 GET  /redfish/v1                                    ServiceRoot
 GET  /redfish/v1/odata                              OData service doc
-GET  /redfish/v1/Systems                            ComputerSystemCollection
-GET  /redfish/v1/Systems/1                          ComputerSystem + PowerState
-POST /redfish/v1/Systems/1/Actions/
+GET  /redfish/v1/Systems                            ComputerSystemCollection (one member per BMC)
+GET  /redfish/v1/Systems/{id}                       ComputerSystem + PowerState
+POST /redfish/v1/Systems/{id}/Actions/
                   ComputerSystem.Reset              power action
-GET  /redfish/v1/Chassis                            ChassisCollection
-GET  /redfish/v1/Chassis/1                          Chassis
-GET  /redfish/v1/Chassis/1/Power                    Voltages + PowerSupplies
-GET  /redfish/v1/Chassis/1/Thermal                  Temperatures + Fans
+GET  /redfish/v1/Chassis                            ChassisCollection (one member per BMC)
+GET  /redfish/v1/Chassis/{id}                       Chassis
+GET  /redfish/v1/Chassis/{id}/Power                 Voltages + PowerSupplies
+GET  /redfish/v1/Chassis/{id}/Thermal               Temperatures + Fans
 ```
+
+`{id}` is a member id from `config/bmcs.yaml`. The
+baked-in default ships one in-band member, id `"1"`,
+so the examples below use `/redfish/v1/Systems/1`.
 
 `/redfish/v1/` (with trailing slash) returns a 307
 redirect to `/redfish/v1` -- url2code normalizes
@@ -82,41 +87,79 @@ status` -> `"PowerState": "On"`) lives in the shims;
 the wrapper JSON (OData ids, types, action targets)
 lives in YAML response templates.
 
-## Quick start (in-band)
+## Quick start (in-band, baked-in default)
 
 ```sh
 docker compose up -d
 curl -s http://localhost:8000/redfish/v1/Systems/1 | jq .
 ```
 
-Requires `/dev/ipmi0` on the host (`modprobe
-ipmi_devintf` if missing) and the compose file's
-`devices:` block pointing the container at it.
+The image ships one in-band member (id `"1"`,
+`interface: open`). In-band requires `/dev/ipmi0` on
+the host (`modprobe ipmi_devintf` if missing) and the
+compose file's `devices:` block pointing the container
+at it.
 
-## Quick start (remote BMC)
+## Quick start (remote / multiple BMCs)
 
-```sh
-export SALMON_BMC_HOST=10.0.0.42
-export SALMON_BMC_USER=admin
-export SALMON_BMC_PASSWORD='changeme'
-# Comment out the `devices:` block in
-# docker-compose.yaml first.
-docker compose up -d
-curl -s http://localhost:8000/redfish/v1/Systems/1 | jq .
+Write a `bmcs.yaml` describing your fleet and mount it
+read-only over the baked-in default:
+
+```yaml
+# bmcs.yaml
+- id: "1"
+  host: 10.0.0.11
+  user: admin
+  password: changeme
+  interface: lanplus
+- id: "2"
+  host: 10.0.0.12
+  user: admin
+  password: changeme2
+  interface: lanplus
 ```
 
-## Configuration
+```sh
+# Uncomment the volumes: block in docker-compose.yaml
+# (mounts ./bmcs.yaml at /app/config/bmcs.yaml:ro).
+docker compose up -d
+curl -s http://localhost:8000/redfish/v1/Systems | jq .   # lists 1 and 2
+curl -s http://localhost:8000/redfish/v1/Systems/2 | jq .
+```
 
-| Var                     | Default     | Meaning                                  |
-|-------------------------|-------------|------------------------------------------|
-| `SALMON_BMC_HOST`       | (unset)     | If set, remote mode; else in-band.       |
-| `SALMON_BMC_USER`       | (unset)     | BMC username for remote mode.            |
-| `SALMON_BMC_PASSWORD`   | (unset)     | Passed via `IPMI_PASSWORD` so it doesn't appear in `ps`. |
-| `SALMON_BMC_INTERFACE`  | `lanplus`   | ipmitool interface for remote mode (`lanplus` or `lan`). |
+## BMC inventory (`bmcs.yaml`)
 
-To change the System / Chassis id from the default
-`"1"`, edit `config/tools.yaml::template_static.id`
-in each endpoint that has it.
+`config/bmcs.yaml` is the source of truth for which
+BMCs salmon fronts. It's a YAML list of members:
+
+| Field       | Required | Meaning                                                                 |
+|-------------|----------|-------------------------------------------------------------------------|
+| `id`        | yes      | Redfish member id -- the `{id}` route segment. URL-safe string.         |
+| `host`      | no       | BMC network address. Set -> remote mode; omit -> in-band (`/dev/ipmi0`).|
+| `user`      | remote   | BMC username (remote mode).                                             |
+| `password`  | remote   | BMC password. Passed via `IPMI_PASSWORD` + `-E`, never on the cmdline / in `ps`. |
+| `interface` | no       | `lanplus` (default remote), `lan` (legacy), or `open` (in-band).        |
+
+`bin/ipmi-env` resolves the request's `{id}` against
+this file and builds the ipmitool connection args;
+`bin/ipmi-collection` builds the collection Members
+arrays from it. An id not in the file resolves to a
+502.
+
+**Production:** the credentials live in this file --
+there is no separate secrets mechanism. Source it from
+your secret store and **mount it read-only** over
+`/app/config/bmcs.yaml` rather than baking creds into
+the image:
+
+```yaml
+volumes:
+  - ./bmcs.yaml:/app/config/bmcs.yaml:ro
+```
+
+The single-host `SALMON_BMC_HOST` / `_USER` /
+`_PASSWORD` / `_INTERFACE` env vars are gone as of
+1.0.0; move those values into `bmcs.yaml`.
 
 ## How the templates work
 

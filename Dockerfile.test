@@ -14,6 +14,13 @@
 # copied over the apt-installed binary at the same
 # path. salmon's bin/ shims don't know they're
 # talking to a fake.
+#
+# We also drop a two-member test inventory
+# (tests/bmcs.yaml) over the baked-in single-member
+# default so the e2e exercises the multi-host paths:
+# ids "1" and "2", both in-band (the mock ignores auth
+# flags), so the collections list two members and an
+# unknown id resolves to a non-2xx.
 
 ARG SALMON_BUILD_TAG=latest
 FROM kibble.apps.blindhub.ca/cobdfamily/salmon:${SALMON_BUILD_TAG}
@@ -21,4 +28,5 @@ FROM kibble.apps.blindhub.ca/cobdfamily/salmon:${SALMON_BUILD_TAG}
 USER root
 COPY tests/mock/ipmitool /usr/bin/ipmitool
 RUN chmod +x /usr/bin/ipmitool
+COPY tests/bmcs.yaml /app/config/bmcs.yaml
 USER url2code

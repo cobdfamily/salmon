@@ -10,6 +10,15 @@
 # already (it's how FastAPI / url2code load), so no
 # extra dep.
 #
+# Usage:
+#   ipmi-sensors-thermal <id>
+#
+# <id> selects the BMC from /app/config/bmcs.yaml (the
+# Redfish member id from the /Chassis/{id}/Thermal route). It's
+# threaded through to ipmi-env for connection-arg resolution
+# AND into the per-reading `@odata.id` fragments below so a
+# member's Temperatures/Fans anchor at its own Chassis.
+#
 # Filter rule:
 #   "degrees C" units  -> Temperatures
 #   "RPM" units        -> Fans
@@ -17,10 +26,15 @@
 # for ipmi-sensors-power.
 set -eu
 
+# ipmi-env reads the BMC id from $1; sourcing keeps our $@.
 . /app/bin/ipmi-env
 
-ipmitool $IPMITOOL_AUTH sensor list | /usr/local/bin/python3 -c '
-import json, sys
+# Hand the id to the parser (via env) so the fragment
+# `@odata.id`s point at /Chassis/<id>/Thermal, not a literal 1.
+SALMON_BMC_ID="$1" ipmitool $IPMITOOL_AUTH sensor list | /usr/local/bin/python3 -c '
+import json, os, sys
+
+bmc_id = os.environ["SALMON_BMC_ID"]
 
 temps = []
 fans  = []
@@ -41,7 +55,7 @@ for line in sys.stdin:
     member_id = name.replace(" ", "_").replace("/", "_")
     if "degrees C" in unit:
         temps.append({
-            "@odata.id":          f"/redfish/v1/Chassis/1/Thermal#/Temperatures/{member_id}",
+            "@odata.id":          f"/redfish/v1/Chassis/{bmc_id}/Thermal#/Temperatures/{member_id}",
             "MemberId":           member_id,
             "Name":               name,
             "ReadingCelsius":     reading,
@@ -49,7 +63,7 @@ for line in sys.stdin:
         })
     elif "RPM" in unit:
         fans.append({
-            "@odata.id":          f"/redfish/v1/Chassis/1/Thermal#/Fans/{member_id}",
+            "@odata.id":          f"/redfish/v1/Chassis/{bmc_id}/Thermal#/Fans/{member_id}",
             "MemberId":           member_id,
             "Name":               name,
             "Reading":            reading,

@@ -20,11 +20,11 @@ set -eu
 
 # Skip past the auth flags ipmitool would honor
 # (-I, -H, -U, -E, -P) so we look at the verb the
-# bin/ shims actually care about. The shims set
-# IPMITOOL_AUTH = "" in CI (SALMON_BMC_HOST is
-# never set by the test compose), so in practice
-# the args start at the subcommand -- but be
-# defensive in case the test config changes.
+# bin/ shims actually care about. With the test
+# inventory (tests/bmcs.yaml: in-band members)
+# ipmi-env emits "-I open", so the args start at
+# "-I open <subcommand>"; the loop below consumes
+# the auth flags regardless of in-band vs remote.
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -I|-H|-U|-P) shift 2 ;;

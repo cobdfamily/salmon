@@ -1,0 +1,17 @@
+# Test BMC inventory for the e2e suite. Mounted (via
+# Dockerfile.test) over /app/config/bmcs.yaml so the suite
+# exercises a TWO-member multi-host inventory against the
+# mocked ipmitool.
+#
+# Both members are in-band (interface: open, no host): the
+# mock ipmitool ignores auth flags entirely, so in-band vs
+# remote is indistinguishable to it -- and in-band needs no
+# credentials in the file. The e2e walks the /{id} paths for
+# id "1", asserts both collections list two members, and
+# asserts an unknown id (e.g. /Systems/999) is a non-2xx.
+
+- id: "1"
+  interface: open
+
+- id: "2"
+  interface: open

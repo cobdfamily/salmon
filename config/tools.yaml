@@ -3,37 +3,42 @@
 #
 # Every Redfish JSON envelope is built via the
 # `output.template` feature url2code 1.1.0 added; the
-# four IPMI-touching endpoints shell out to bin/ipmi-*
+# IPMI-touching endpoints shell out to bin/ipmi-*
 # shims (each emitting a small JSON blob) and let the
 # template wrap that in OData/Redfish boilerplate. The
-# remaining endpoints (ServiceRoot, OData document,
-# collection envelopes) ship as pure-static templates
-# -- their `command.executable` is `/bin/true` because
-# url2code still requires a command per endpoint, but
-# nothing parsed_output-side flows into the response.
+# remaining endpoints (ServiceRoot, OData document)
+# ship as pure-static templates -- their
+# `command.executable` is `/bin/true` because url2code
+# still requires a command per endpoint, but nothing
+# parsed_output-side flows into the response.
 #
-# Single-host scope (v0.2.0): salmon represents ONE
-# BMC. The Systems and Chassis collections always have
-# exactly one member; its id comes from
-# template_static.id (default "1"), overridable via the
-# YAML at deploy time.
+# MULTI-HOST scope (v1.0.0): salmon represents N BMCs.
+# Each BMC is a member in /app/config/bmcs.yaml, keyed
+# by its Redfish `id`. The per-member routes carry that
+# id as the `{id}` path segment (url2code 1.7.0 route
+# path-params), which url2code threads through to each
+# shim as its first argument and exposes in templates as
+# `{request.id}`. bin/ipmi-env resolves the id ->
+# connection args from bmcs.yaml; bin/ipmi-collection
+# builds the Systems/Chassis collection Members lists
+# from the same file. REQUIRES url2code >= 1.7.0.
 
 api:
   title:        salmon
-  version:      0.3.1
+  version:      1.0.0
   default_root: /
 
 logging:
   level: INFO
 
 # ------------------------------------------------------------------
-# Shared static bag. salmon is a single-host facade, so the system
-# id and a few other Redfish boilerplate strings are constant. We
-# keep them next to the endpoints rather than scattered through
-# every template_static so future operator-level overrides are
-# obvious. (When url2code grows YAML-level anchors this would be
-# `<<: *common_static`; for now each endpoint repeats `id` because
-# pydantic's YAML loader doesn't expand anchors that span values.)
+# Multi-host: the BMC inventory lives in config/bmcs.yaml, not in
+# this file. Per-member endpoints capture the Redfish member id from
+# the `{id}` path segment and echo/coerce it via a `text` validation
+# so it renders consistently as `{request.id}` in templates and is
+# passed as the first arg to the ipmi-* shims. The collection
+# endpoints build their Members arrays dynamically from bmcs.yaml
+# via bin/ipmi-collection.
 # ------------------------------------------------------------------
 
 endpoints:
@@ -114,61 +119,67 @@ endpoints:
 
   # ============================================================
   # Systems collection.
-  # GET /redfish/v1/Systems -> one member: "/redfish/v1/Systems/1"
+  # GET /redfish/v1/Systems -> one member per BMC in bmcs.yaml,
+  # built dynamically by bin/ipmi-collection.
   # ============================================================
 
   - name: systems-collection
     route:  /redfish/v1/Systems
     method: GET
     description: >-
-      ComputerSystemCollection. salmon represents one BMC; the
-      collection always has exactly one member.
+      ComputerSystemCollection. One member per BMC in
+      config/bmcs.yaml; the Members list + count are produced
+      by bin/ipmi-collection.
     command:
-      executable: /bin/true
-    output:
-      mode: text
-      template_content_type: application/json
-      template_static:
-        id: "1"
-      template:
-        "@odata.id":   /redfish/v1/Systems
-        "@odata.type": "#ComputerSystemCollection.ComputerSystemCollection"
-        Name:          Computer System Collection
-        Members@odata.count: 1
-        Members:
-          - "@odata.id": /redfish/v1/Systems/{static.id}
-
-  # ============================================================
-  # ComputerSystem (single member).
-  # GET /redfish/v1/Systems/1 -> Id + Name + PowerState + Reset
-  # action. PowerState comes from bin/ipmi-power-status (which
-  # already TitleCases the value to match Redfish).
-  # ============================================================
-
-  - name: computer-system
-    route:  /redfish/v1/Systems/1
-    method: GET
-    description: >-
-      ComputerSystem. PowerState reads from ipmitool; the rest
-      is static.
-    command:
-      executable: /app/bin/ipmi-power-status
+      executable: /app/bin/ipmi-collection
+      args:
+        - /redfish/v1/Systems
       timeout_seconds: 10
     output:
       mode: native_json
       template_content_type: application/json
-      template_static:
-        id:   "1"
-        name: system-1
       template:
-        "@odata.id":   /redfish/v1/Systems/{static.id}
+        "@odata.id":   /redfish/v1/Systems
+        "@odata.type": "#ComputerSystemCollection.ComputerSystemCollection"
+        Name:          Computer System Collection
+        Members@odata.count: "{parsed_output.count}"
+        Members:       "{parsed_output.Members}"
+
+  # ============================================================
+  # ComputerSystem (single member).
+  # GET /redfish/v1/Systems/{id} -> Id + Name + PowerState +
+  # Reset action. PowerState comes from bin/ipmi-power-status
+  # (which already TitleCases the value to match Redfish); the
+  # {id} path segment selects the BMC from bmcs.yaml.
+  # ============================================================
+
+  - name: computer-system
+    route:  /redfish/v1/Systems/{id}
+    method: GET
+    description: >-
+      ComputerSystem. PowerState reads from ipmitool for the
+      BMC selected by {id}; the rest is static.
+    command:
+      executable: /app/bin/ipmi-power-status
+      args:
+        - "{id}"
+      timeout_seconds: 10
+    request:
+      validations:
+        id:
+          type: text
+    output:
+      mode: native_json
+      template_content_type: application/json
+      template:
+        "@odata.id":   /redfish/v1/Systems/{request.id}
         "@odata.type": "#ComputerSystem.v1_0_0.ComputerSystem"
-        Id:            "{static.id}"
-        Name:          "{static.name}"
+        Id:            "{request.id}"
+        Name:          "System {request.id}"
         PowerState:    "{parsed_output.PowerState}"
         Actions:
           "#ComputerSystem.Reset":
-            target: /redfish/v1/Systems/{static.id}/Actions/ComputerSystem.Reset
+            target: /redfish/v1/Systems/{request.id}/Actions/ComputerSystem.Reset
             "ResetType@Redfish.AllowableValues":
               # YAML 1.1 treats bare On/Off (and Yes/No)
               # as booleans -- quote them so they survive
@@ -185,26 +196,29 @@ endpoints:
 
   # ============================================================
   # Reset action.
-  # POST /redfish/v1/Systems/1/Actions/ComputerSystem.Reset
+  # POST /redfish/v1/Systems/{id}/Actions/ComputerSystem.Reset
   # body: { "ResetType": "<one of the AllowableValues>" }
   # ============================================================
 
   - name: computer-system-reset
-    route:  /redfish/v1/Systems/1/Actions/ComputerSystem.Reset
+    route:  /redfish/v1/Systems/{id}/Actions/ComputerSystem.Reset
     method: POST
     description: >-
       ComputerSystem.Reset action. Maps the Redfish ResetType
       to the matching `ipmitool chassis power` subcommand
-      inside bin/ipmi-reset.
+      inside bin/ipmi-reset, against the BMC selected by {id}.
     defaults:
       ResetType: ForceRestart
     command:
       executable: /app/bin/ipmi-reset
       args:
+        - "{id}"
         - "{ResetType}"
       timeout_seconds: 15
     request:
       validations:
+        id:
+          type: text
         ResetType:
           type: enum
           # See the AllowableValues note above on quoting
@@ -235,72 +249,80 @@ endpoints:
     method: GET
     description: >-
       ChassisCollection. Mirrors the Systems collection -- one
-      member, the same id.
+      member per BMC in config/bmcs.yaml, built by
+      bin/ipmi-collection.
     command:
-      executable: /bin/true
+      executable: /app/bin/ipmi-collection
+      args:
+        - /redfish/v1/Chassis
+      timeout_seconds: 10
     output:
-      mode: text
+      mode: native_json
       template_content_type: application/json
-      template_static:
-        id: "1"
       template:
         "@odata.id":   /redfish/v1/Chassis
         "@odata.type": "#ChassisCollection.ChassisCollection"
         Name:          Chassis Collection
-        Members@odata.count: 1
-        Members:
-          - "@odata.id": /redfish/v1/Chassis/{static.id}
+        Members@odata.count: "{parsed_output.count}"
+        Members:       "{parsed_output.Members}"
 
   # ============================================================
   # Chassis (single member).
   # ============================================================
 
   - name: chassis
-    route:  /redfish/v1/Chassis/1
+    route:  /redfish/v1/Chassis/{id}
     method: GET
     description: >-
       Chassis. Static envelope plus links to its Power and
-      Thermal sub-resources.
+      Thermal sub-resources; the {id} path segment is echoed
+      back as the resource id.
     command:
       executable: /bin/true
+    request:
+      validations:
+        id:
+          type: text
     output:
       mode: text
       template_content_type: application/json
-      template_static:
-        id:   "1"
-        name: chassis-1
       template:
-        "@odata.id":      /redfish/v1/Chassis/{static.id}
+        "@odata.id":      /redfish/v1/Chassis/{request.id}
         "@odata.type":    "#Chassis.v1_0_0.Chassis"
-        Id:               "{static.id}"
-        Name:             "{static.name}"
+        Id:               "{request.id}"
+        Name:             "Chassis {request.id}"
         ChassisType:      RackMount
         Power:
-          "@odata.id":    /redfish/v1/Chassis/{static.id}/Power
+          "@odata.id":    /redfish/v1/Chassis/{request.id}/Power
         Thermal:
-          "@odata.id":    /redfish/v1/Chassis/{static.id}/Thermal
+          "@odata.id":    /redfish/v1/Chassis/{request.id}/Thermal
 
   # ============================================================
   # Power resource.
-  # GET /redfish/v1/Chassis/1/Power -> Voltages + PowerSupplies.
+  # GET /redfish/v1/Chassis/{id}/Power -> Voltages + PowerSupplies.
   # ============================================================
 
   - name: chassis-power
-    route:  /redfish/v1/Chassis/1/Power
+    route:  /redfish/v1/Chassis/{id}/Power
     method: GET
     description: >-
       Power resource. Voltages + PowerSupplies parsed from
-      ipmitool sensor list; PSU detection by name prefix.
+      ipmitool sensor list for the BMC selected by {id}; PSU
+      detection by name prefix.
     command:
       executable: /app/bin/ipmi-sensors-power
+      args:
+        - "{id}"
       timeout_seconds: 15
+    request:
+      validations:
+        id:
+          type: text
     output:
       mode: native_json
       template_content_type: application/json
-      template_static:
-        id: "1"
       template:
-        "@odata.id":     /redfish/v1/Chassis/{static.id}/Power
+        "@odata.id":     /redfish/v1/Chassis/{request.id}/Power
         "@odata.type":   "#Power.v1_0_0.Power"
         Id:              Power
         Name:            Power
@@ -309,25 +331,30 @@ endpoints:
 
   # ============================================================
   # Thermal resource.
-  # GET /redfish/v1/Chassis/1/Thermal -> Temperatures + Fans.
+  # GET /redfish/v1/Chassis/{id}/Thermal -> Temperatures + Fans.
   # ============================================================
 
   - name: chassis-thermal
-    route:  /redfish/v1/Chassis/1/Thermal
+    route:  /redfish/v1/Chassis/{id}/Thermal
     method: GET
     description: >-
       Thermal resource. Temperatures (degrees C readings) and
-      Fans (RPM readings) parsed from ipmitool sensor list.
+      Fans (RPM readings) parsed from ipmitool sensor list for
+      the BMC selected by {id}.
     command:
       executable: /app/bin/ipmi-sensors-thermal
+      args:
+        - "{id}"
       timeout_seconds: 15
+    request:
+      validations:
+        id:
+          type: text
     output:
       mode: native_json
       template_content_type: application/json
-      template_static:
-        id: "1"
       template:
-        "@odata.id":     /redfish/v1/Chassis/{static.id}/Thermal
+        "@odata.id":     /redfish/v1/Chassis/{request.id}/Thermal
         "@odata.type":   "#Thermal.v1_0_0.Thermal"
         Id:              Thermal
         Name:            Thermal

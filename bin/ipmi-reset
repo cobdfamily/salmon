@@ -3,9 +3,12 @@
 # `ipmitool chassis power` subcommand and runs it.
 #
 # Usage:
-#   ipmi-reset <ResetType>
+#   ipmi-reset <id> <ResetType>
 #
-# Where ResetType is one of the values url2code's enum
+# <id> selects the BMC from /app/config/bmcs.yaml (the
+# Redfish member id from the /Systems/{id} route); it's
+# threaded straight through to ipmi-env for connection-arg
+# resolution. <ResetType> is one of the values url2code's enum
 # validation already permits (see config/tools.yaml's
 # power-action flag definition):
 #
@@ -26,9 +29,12 @@
 # returns 502 with the stderr in the error body.
 set -eu
 
+# ipmi-env reads the BMC id from $1; sourcing keeps our $@.
 . /app/bin/ipmi-env
 
-case "${1:-}" in
+# The Redfish ResetType is the SECOND argument ($1 is the id).
+reset_type="${2:-}"
+case "$reset_type" in
     On)               action="on" ;;
     ForceOn)          action="on" ;;
     ForceOff)         action="off" ;;
@@ -42,7 +48,7 @@ case "${1:-}" in
         exit 2
         ;;
     *)
-        echo "unsupported ResetType: $1" >&2
+        echo "unsupported ResetType: $reset_type" >&2
         exit 2
         ;;
 esac
@@ -56,4 +62,4 @@ esac
 ipmitool $IPMITOOL_AUTH chassis power "$action" >&2
 
 printf '{"ok":true,"ResetType":"%s","action":"%s"}\n' \
-    "$1" "$action"
+    "$reset_type" "$action"

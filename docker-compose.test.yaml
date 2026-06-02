@@ -9,9 +9,11 @@
 #     Dockerfile.test), not the kibble registry tag.
 #   - No `devices:` block -- the mock doesn't need
 #     /dev/ipmi0.
-#   - No SALMON_BMC_* env vars -- the mock ignores
-#     auth flags and runs identically in-band and
-#     remote-mode-shaped invocations.
+#   - No bmcs.yaml mount -- the test image
+#     (Dockerfile.test) bakes in tests/bmcs.yaml (a
+#     two-member in-band inventory, ids "1" and "2").
+#     The mock ignores auth flags, so in-band and
+#     remote-shaped invocations run identically.
 
 services:
   salmon:

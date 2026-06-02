@@ -5,16 +5,30 @@
 # ipmi-sensors-thermal; same parsing strategy, different
 # unit filter.
 #
+# Usage:
+#   ipmi-sensors-power <id>
+#
+# <id> selects the BMC from /app/config/bmcs.yaml (the
+# Redfish member id from the /Chassis/{id}/Power route). It's
+# threaded through to ipmi-env for connection-arg resolution
+# AND into the per-reading `@odata.id` fragments below so a
+# member's Voltages/PowerSupplies anchor at its own Chassis.
+#
 # Filter rule:
 #   "Volts" units             -> Voltages
 #   "Watts" units, "PSU"/"PS" in name -> PowerSupplies
 # Everything else is left for ipmi-sensors-thermal.
 set -eu
 
+# ipmi-env reads the BMC id from $1; sourcing keeps our $@.
 . /app/bin/ipmi-env
 
-ipmitool $IPMITOOL_AUTH sensor list | /usr/local/bin/python3 -c '
-import json, sys
+# Hand the id to the parser (via env) so the fragment
+# `@odata.id`s point at /Chassis/<id>/Power, not a literal 1.
+SALMON_BMC_ID="$1" ipmitool $IPMITOOL_AUTH sensor list | /usr/local/bin/python3 -c '
+import json, os, sys
+
+bmc_id = os.environ["SALMON_BMC_ID"]
 
 voltages = []
 psus     = []
@@ -32,7 +46,7 @@ for line in sys.stdin:
     member_id = name.replace(" ", "_").replace("/", "_")
     if "Volts" in unit:
         voltages.append({
-            "@odata.id":      f"/redfish/v1/Chassis/1/Power#/Voltages/{member_id}",
+            "@odata.id":      f"/redfish/v1/Chassis/{bmc_id}/Power#/Voltages/{member_id}",
             "MemberId":       member_id,
             "Name":           name,
             "ReadingVolts":   reading,
@@ -40,7 +54,7 @@ for line in sys.stdin:
         })
     elif "Watts" in unit and ("PSU" in name.upper() or name.upper().startswith("PS")):
         psus.append({
-            "@odata.id":      f"/redfish/v1/Chassis/1/Power#/PowerSupplies/{member_id}",
+            "@odata.id":      f"/redfish/v1/Chassis/{bmc_id}/Power#/PowerSupplies/{member_id}",
             "MemberId":       member_id,
             "Name":           name,
             "PowerInputWatts": reading,

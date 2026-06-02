@@ -1,16 +1,23 @@
 # Local-dev / production-shape compose for salmon.
 #
-# Defaults to in-band mode: ipmitool talks to
-# /dev/ipmi0 on the host. The host kernel needs the
-# ``ipmi_devintf`` module loaded; the container
-# needs the device passed through via ``devices``.
+# salmon is MULTI-HOST as of 1.0.0: the BMCs it fronts and
+# their credentials live in config/bmcs.yaml, NOT in
+# environment variables. The image bakes in a single in-band
+# example member (id "1", interface: open) so it works against
+# the host's /dev/ipmi0 out of the box.
 #
-# For remote-BMC mode, comment out the device
-# passthrough and set SALMON_BMC_HOST /
-# SALMON_BMC_USER / SALMON_BMC_PASSWORD. salmon's
-# bin/ipmi-env helper picks up the env vars and
-# adds the right ipmitool -I lanplus -H -U -P
-# flags automatically.
+# For a real deployment, write your own bmcs.yaml (one entry
+# per BMC -- see the format documented in the baked-in
+# config/bmcs.yaml) and mount it READ-ONLY over the baked-in
+# default. Uncomment the `volumes:` block below and point it at
+# your file (sourced from your secret store -- the passwords
+# live in this file). Mirrors how brl mounts its tables.yaml.
+#
+# In-band mode (a member with no `host`, interface: open) talks
+# to /dev/ipmi0 on the host: the host kernel needs the
+# ``ipmi_devintf`` module loaded and the device passed through
+# via ``devices`` below. Remote members (with a `host`) need no
+# device passthrough; credentials come from the file.
 #
 # Override SALMON_TAG to pin a specific version.
 
@@ -20,14 +27,14 @@ services:
     container_name: salmon
     ports:
       - "${SALMON_HTTP_PORT:-8000}:8000"
-    environment:
-      SALMON_BMC_HOST:      ${SALMON_BMC_HOST:-}
-      SALMON_BMC_USER:      ${SALMON_BMC_USER:-}
-      SALMON_BMC_PASSWORD:  ${SALMON_BMC_PASSWORD:-}
-      SALMON_BMC_INTERFACE: ${SALMON_BMC_INTERFACE:-}
-    # In-band mode: pass the host's BMC device
-    # through. Comment this block out for remote
-    # deployments.
+    # Multi-host creds come from the mounted bmcs.yaml, not env
+    # vars. Uncomment to mount your real inventory read-only over
+    # the baked-in single-member example:
+    # volumes:
+    #   - ./bmcs.yaml:/app/config/bmcs.yaml:ro
+    # In-band mode: pass the host's BMC device through. Needed
+    # only if any bmcs.yaml member is in-band (no host). Comment
+    # this block out for an all-remote inventory.
     devices:
       - /dev/ipmi0:/dev/ipmi0
     healthcheck:

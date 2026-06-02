@@ -1,0 +1,65 @@
+#!/bin/sh
+# Emits a Redfish collection's Members array + count as
+# JSON, built dynamically from /app/config/bmcs.yaml.
+#
+# Usage:
+#   ipmi-collection <base-path>
+#
+# <base-path> is the collection's resource path, e.g.
+# /redfish/v1/Systems or /redfish/v1/Chassis. Every member
+# in bmcs.yaml contributes one entry:
+#   { "@odata.id": "<base-path>/<id>" }
+#
+# Output shape (stdout, one JSON object):
+#   {
+#     "Members": [
+#       {"@odata.id": "/redfish/v1/Systems/1"},
+#       {"@odata.id": "/redfish/v1/Systems/2"}
+#     ],
+#     "count": 2
+#   }
+#
+# The Systems and Chassis collection endpoints run this in
+# native_json mode and lift the whole `Members` list and the
+# `count` int into their response templates -- so the
+# collections stay in lockstep with bmcs.yaml without any
+# per-deploy YAML edits.
+#
+# No ipmitool here: a collection is pure inventory. We read
+# the YAML with url2code's runtime python (PyYAML ships in
+# that venv -- same pattern as ipmi-env / brl's bin/brl-
+# translate) rather than a fragile awk/grep parser.
+set -eu
+
+BMCS_FILE="/app/config/bmcs.yaml"
+
+BASE_PATH="${1:-}"
+if [ -z "$BASE_PATH" ]; then
+    echo "ipmi-collection: no base path passed (\$1 is empty)" >&2
+    exit 64
+fi
+
+if [ ! -f "$BMCS_FILE" ]; then
+    echo "ipmi-collection: BMC inventory missing: $BMCS_FILE" >&2
+    exit 70
+fi
+
+/app/.venv/bin/python3 -c '
+import json, sys, yaml
+
+base = sys.argv[2].rstrip("/")
+with open(sys.argv[1]) as fh:
+    members = yaml.safe_load(fh) or []
+
+out = []
+for m in members:
+    mid = m.get("id")
+    if mid is None or str(mid) == "":
+        sys.stderr.write("ipmi-collection: member without an id in " + sys.argv[1] + "\n")
+        sys.exit(1)
+    # ids compare/render as strings: a YAML `id: 1` (int) and
+    # a path segment "1" (str) must produce the same @odata.id.
+    out.append({"@odata.id": base + "/" + str(mid)})
+
+json.dump({"Members": out, "count": len(out)}, sys.stdout)
+' "$BMCS_FILE" "$BASE_PATH"

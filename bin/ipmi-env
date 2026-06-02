@@ -1,44 +1,135 @@
 #!/bin/sh
 # Common auth-args helper. `eval` this file inside other
 # salmon shims to populate $IPMITOOL_AUTH with the right
-# CLI flags based on env:
+# CLI flags for ONE BMC, selected by its Redfish member
+# id.
 #
-#   - SALMON_BMC_HOST unset (or empty)
-#       -> in-band mode: ipmitool talks to /dev/ipmi0 on
-#          the container's host (needs `devices:
-#          /dev/ipmi0:/dev/ipmi0` in compose).
-#   - SALMON_BMC_HOST set
-#       -> remote mode: ipmitool -I lanplus -H ... -U ...
-#          -P ... talks to the BMC over the network. No
-#          device passthrough required; the container's
-#          egress reaches the BMC's network address.
+# Usage (sourced): the BMC id is the sourcing shim's FIRST
+# positional argument ($1) -- sourcing keeps the parent's
+# `$@`, so a shim invoked `ipmi-power-status 2` exposes
+# "2" to us as $1 without any extra plumbing. (ipmi-reset,
+# invoked `ipmi-reset 2 ForceRestart`, still has the id at
+# $1; its ResetType at $2 is none of our concern.)
 #
-# Why a sourced helper rather than a python wrapper:
-# salmon shells out to ipmitool four times per "give me
-# the system status" pass through Redfish; a python
-# startup per call would dominate the latency. POSIX sh
-# keeps the per-call cost in the low milliseconds.
+#   . /app/bin/ipmi-env        # resolves $1 -> $IPMITOOL_AUTH
 #
-# IPMITOOL_INTERFACE override is honoured if set
-# explicitly. Default for remote is lanplus (which is
-# what every modern BMC speaks); the legacy `lan`
-# interface remains available for ancient BMCs by
-# setting SALMON_BMC_INTERFACE=lan.
+# salmon is MULTI-HOST as of 1.0.0: every BMC it fronts is
+# a member in /app/config/bmcs.yaml, keyed by `id`. The
+# per-member Redfish routes carry the id as the `{id}` path
+# segment, so url2code threads it through as each shim's
+# first argument. We resolve that id -> connection args here.
+#
+# Resolution rules (per the member's bmcs.yaml entry):
+#
+#   - `host` set  -> remote mode:
+#       ipmitool -I <interface> -H <host> -U <user> -E
+#       (interface defaults to lanplus, what every modern
+#       BMC speaks; `lan` remains for ancient BMCs).
+#   - `host` omitted -> in-band mode:
+#       ipmitool -I open against the container's /dev/ipmi0
+#       (needs `devices: /dev/ipmi0:/dev/ipmi0` in compose).
+#       Set the member's `interface: open` to make this
+#       explicit; we treat a missing host as in-band
+#       regardless.
+#
+# SECURITY: the BMC password is NEVER placed on the
+# ipmitool command line (it would show up in `ps` / the
+# container's process list, and url2code logs the rendered
+# executable). We export it as the IPMI_PASSWORD env var and
+# pass ipmitool's `-E` flag, which reads the password from
+# that env. The password reaches python (to read the YAML)
+# and the env -- never argv.
+#
+# Why read the YAML with python rather than a sh parser:
+# bmcs.yaml is real YAML (quoted ids, optional fields), and
+# PyYAML already ships in url2code's runtime venv (it's how
+# url2code parses tools.yaml itself). We use that interpreter
+# explicitly -- same pattern brl's bin/brl-translate uses to
+# resolve its table catalog -- rather than hand-rolling a
+# fragile awk/grep parser. The per-call python startup is the
+# cost of multi-host; a few ms against an ipmitool network
+# round-trip that dominates anyway.
 set -eu
 
-IPMITOOL_AUTH=""
-if [ -n "${SALMON_BMC_HOST:-}" ]; then
-    interface="${SALMON_BMC_INTERFACE:-lanplus}"
-    IPMITOOL_AUTH="-I $interface -H $SALMON_BMC_HOST"
-    if [ -n "${SALMON_BMC_USER:-}" ]; then
-        IPMITOOL_AUTH="$IPMITOOL_AUTH -U $SALMON_BMC_USER"
+BMCS_FILE="/app/config/bmcs.yaml"
+
+# The sourcing shim's first positional argument is the BMC id.
+SALMON_BMC_ID="${1:-}"
+if [ -z "$SALMON_BMC_ID" ]; then
+    echo "ipmi-env: no BMC id passed (sourcing shim's \$1 is empty)" >&2
+    exit 2
+fi
+
+if [ ! -f "$BMCS_FILE" ]; then
+    echo "ipmi-env: BMC inventory missing: $BMCS_FILE" >&2
+    exit 70
+fi
+
+# Resolve the member -> three tab-separated fields:
+#   <interface>\t<host>\t<user>
+# and, separately, the password (via stdout line 2) so it
+# never has to be interpolated into the eval'd assignments.
+# A non-zero exit / empty interface means "id not found".
+#
+# We emit two lines:
+#   line 1: <interface>\t<host>\t<user>
+#   line 2: <password>      (may be empty for in-band)
+_resolved="$(/app/.venv/bin/python3 -c '
+import sys, yaml
+with open(sys.argv[1]) as fh:
+    members = yaml.safe_load(fh) or []
+wanted = sys.argv[2]
+for m in members:
+    # ids are compared as strings -- a YAML `id: 1` (int) and
+    # the path segment "1" (str) must still match.
+    if str(m.get("id", "")) == wanted:
+        host = m.get("host") or ""
+        # interface default: open (in-band) when there is no
+        # host, lanplus (remote) when there is one.
+        default_iface = "lanplus" if host else "open"
+        iface = m.get("interface") or default_iface
+        user = m.get("user") or ""
+        password = m.get("password") or ""
+        # Tabs separate the connection fields; the password is
+        # on its own line so it is the whole second line and we
+        # never split it.
+        sys.stdout.write("\t".join((iface, host, user)) + "\n")
+        sys.stdout.write(password + "\n")
+        sys.exit(0)
+sys.stderr.write("no BMC with id " + repr(wanted) + " in " + sys.argv[1] + "\n")
+sys.exit(1)
+' "$BMCS_FILE" "$SALMON_BMC_ID")" || {
+    echo "ipmi-env: failed to resolve BMC id '$SALMON_BMC_ID'" >&2
+    exit 1
+}
+
+# Split the two lines. The first holds the connection fields
+# (tab-separated); the second is the password verbatim.
+_conn="$(printf '%s\n' "$_resolved" | sed -n '1p')"
+_password="$(printf '%s\n' "$_resolved" | sed -n '2p')"
+
+# Tab-split the connection fields without forking awk/cut per
+# field: swap tabs for the IFS and read positionally.
+IFS='	' read -r _iface _host _user <<EOF
+$_conn
+EOF
+
+IPMITOOL_AUTH="-I $_iface"
+if [ -n "$_host" ]; then
+    # Remote mode. Host + (optional) user on the command line;
+    # the password goes through IPMI_PASSWORD + -E so it stays
+    # off the process list.
+    IPMITOOL_AUTH="$IPMITOOL_AUTH -H $_host"
+    if [ -n "$_user" ]; then
+        IPMITOOL_AUTH="$IPMITOOL_AUTH -U $_user"
     fi
-    if [ -n "${SALMON_BMC_PASSWORD:-}" ]; then
-        # -E reads from the IPMI_PASSWORD env so the
-        # password doesn't appear in the process list.
+    if [ -n "$_password" ]; then
         IPMITOOL_AUTH="$IPMITOOL_AUTH -E"
-        IPMI_PASSWORD="$SALMON_BMC_PASSWORD"
+        IPMI_PASSWORD="$_password"
         export IPMI_PASSWORD
     fi
 fi
+# In-band mode (no host): "-I open" alone is the whole auth
+# string; ipmitool talks to /dev/ipmi0, no host/user/password.
+
 export IPMITOOL_AUTH

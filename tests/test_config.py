@@ -22,6 +22,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TOOLS_YAML = REPO_ROOT / "config" / "tools.yaml"
+BMCS_YAML = REPO_ROOT / "config" / "bmcs.yaml"
 
 
 @pytest.fixture(scope="module")
@@ -59,7 +60,7 @@ def test_api_version_matches_changelog(cfg) -> None:
     """api.version is what GET / reports. Pin it to
     the SemVer string the CHANGELOG calls out; keeps
     a release from shipping with a stale version."""
-    assert cfg["api"]["version"] == "0.3.1"
+    assert cfg["api"]["version"] == "1.0.0"
 
 
 # ---------------------------------------------------
@@ -72,12 +73,12 @@ EXPECTED_ENDPOINTS = {
     "service-root":             ("GET",  "/redfish/v1/"),
     "odata-root":               ("GET",  "/redfish/v1/odata"),
     "systems-collection":       ("GET",  "/redfish/v1/Systems"),
-    "computer-system":          ("GET",  "/redfish/v1/Systems/1"),
-    "computer-system-reset":    ("POST", "/redfish/v1/Systems/1/Actions/ComputerSystem.Reset"),
+    "computer-system":          ("GET",  "/redfish/v1/Systems/{id}"),
+    "computer-system-reset":    ("POST", "/redfish/v1/Systems/{id}/Actions/ComputerSystem.Reset"),
     "chassis-collection":       ("GET",  "/redfish/v1/Chassis"),
-    "chassis":                  ("GET",  "/redfish/v1/Chassis/1"),
-    "chassis-power":            ("GET",  "/redfish/v1/Chassis/1/Power"),
-    "chassis-thermal":          ("GET",  "/redfish/v1/Chassis/1/Thermal"),
+    "chassis":                  ("GET",  "/redfish/v1/Chassis/{id}"),
+    "chassis-power":            ("GET",  "/redfish/v1/Chassis/{id}/Power"),
+    "chassis-thermal":          ("GET",  "/redfish/v1/Chassis/{id}/Thermal"),
 }
 
 
@@ -153,28 +154,104 @@ def test_reset_allowable_values_match_choices(by_name) -> None:
 
 
 # ---------------------------------------------------
-# OData id consistency
+# Multi-host: path-param routes + bmcs.yaml inventory
 # ---------------------------------------------------
 
 
-def test_static_id_consistent_across_endpoints(by_name) -> None:
-    """Every endpoint that declares template_static.id
-    uses the SAME id. Salmon v0.2.x is single-host;
-    if these drift, the Members links in the
-    collections would point at a system that GET on
-    that id wouldn't find."""
-    ids = set()
-    for name, endpoint in by_name.items():
-        static = (
-            endpoint.get("output", {})
-                    .get("template_static", {})
-        )
-        if "id" in static:
-            ids.add(static["id"])
-    assert ids == {"1"}, (
-        f"expected every template_static.id to be '1', "
-        f"got {ids}"
+# The per-member endpoints address a BMC by its Redfish id
+# captured from the `{id}` route segment (url2code 1.7.0
+# path-params). The id is threaded into the response template
+# as `{request.id}` and passed to the shim as the FIRST arg.
+PER_MEMBER_ENDPOINTS = {
+    "computer-system",
+    "computer-system-reset",
+    "chassis",
+    "chassis-power",
+    "chassis-thermal",
+}
+
+
+@pytest.mark.parametrize("name", sorted(PER_MEMBER_ENDPOINTS))
+def test_per_member_route_uses_id_path_param(
+    by_name, name: str,
+) -> None:
+    """Every per-member endpoint addresses the BMC via the
+    `{id}` path segment -- no literal `/1` left anywhere.
+    A hardcoded id would pin salmon back to single-host."""
+    route = by_name[name]["route"]
+    assert "{id}" in route
+    assert "/Systems/1" not in route
+    assert "/Chassis/1" not in route
+
+
+@pytest.mark.parametrize("name", sorted(PER_MEMBER_ENDPOINTS))
+def test_per_member_validates_id_as_text(
+    by_name, name: str,
+) -> None:
+    """Each per-member endpoint declares an `id` text
+    validation so the captured path segment is coerced /
+    echoed consistently into `{request.id}`."""
+    validations = (
+        by_name[name].get("request", {}).get("validations", {})
     )
+    assert "id" in validations, (
+        f"{name} is missing the `id` path-param validation"
+    )
+    assert validations["id"]["type"] == "text"
+
+
+@pytest.mark.parametrize("name", sorted(PER_MEMBER_ENDPOINTS))
+def test_per_member_template_uses_request_id(
+    by_name, name: str,
+) -> None:
+    """Per-member templates render the id from
+    `{request.id}` and never reference the old
+    `{static.id}` / template_static.id."""
+    output = by_name[name]["output"]
+    assert "template_static" not in output, (
+        f"{name} still carries template_static (should be gone)"
+    )
+    blob = yaml.safe_dump(output["template"])
+    assert "{static.id}" not in blob
+    assert "{static.name}" not in blob
+
+
+def test_no_endpoint_has_literal_one_route(by_name) -> None:
+    """Belt-and-braces: no endpoint anywhere still pins a
+    literal `/Systems/1` or `/Chassis/1` route."""
+    for name, endpoint in by_name.items():
+        route = endpoint["route"]
+        assert not route.endswith("/Systems/1")
+        assert not route.endswith("/Chassis/1")
+        assert "/Systems/1/" not in route
+        assert "/Chassis/1/" not in route
+
+
+# ---- bmcs.yaml inventory ----------------------------------
+
+
+def test_bmcs_yaml_parses_and_is_a_list() -> None:
+    """The BMC inventory parses and is a list of members --
+    bin/ipmi-env and bin/ipmi-collection both iterate it."""
+    members = yaml.safe_load(BMCS_YAML.read_text())
+    assert isinstance(members, list)
+    assert members, "bmcs.yaml has no members"
+
+
+def test_bmcs_entries_have_required_fields() -> None:
+    """Every member needs an `id` (it's the Redfish resource
+    id / route segment). Remote members also need a `user`;
+    host / password / interface are optional (omitting host
+    means in-band, which needs no auth)."""
+    members = yaml.safe_load(BMCS_YAML.read_text())
+    for m in members:
+        assert "id" in m and str(m["id"]) != "", (
+            f"member without an id: {m}"
+        )
+        if m.get("host"):
+            assert m.get("user"), (
+                f"remote member {m['id']} missing user"
+            )
 
 
 # ---------------------------------------------------
@@ -182,6 +259,8 @@ def test_static_id_consistent_across_endpoints(by_name) -> None:
 # ---------------------------------------------------
 
 
+# The four ipmitool-touching endpoints pass the BMC id as the
+# FIRST command arg, ahead of any existing args.
 IPMITOOL_BACKED = {
     "computer-system":       "/app/bin/ipmi-power-status",
     "computer-system-reset": "/app/bin/ipmi-reset",
@@ -206,12 +285,60 @@ def test_ipmitool_backed_endpoints_invoke_shim(
     assert cmd["executable"] == expected_exec
 
 
+@pytest.mark.parametrize("name", sorted(IPMITOOL_BACKED))
+def test_ipmitool_backed_endpoints_pass_id_first(
+    by_name, name: str,
+) -> None:
+    """Each ipmitool-backed endpoint passes `{id}` as the
+    FIRST command arg, so the shim can resolve the BMC from
+    bmcs.yaml. ipmi-reset also takes `{ResetType}` second."""
+    args = by_name[name]["command"].get("args", [])
+    assert args and args[0] == "{id}", (
+        f"{name} must pass {{id}} as the first command arg, "
+        f"got {args}"
+    )
+
+
+def test_reset_passes_resettype_after_id(by_name) -> None:
+    """ipmi-reset's args are [id, ResetType] in that order."""
+    args = by_name["computer-system-reset"]["command"]["args"]
+    assert args == ["{id}", "{ResetType}"]
+
+
+# The collection envelopes are now dynamic: built from
+# bmcs.yaml by bin/ipmi-collection, not /bin/true static.
+COLLECTION_ENDPOINTS = {
+    "systems-collection": "/redfish/v1/Systems",
+    "chassis-collection": "/redfish/v1/Chassis",
+}
+
+
+@pytest.mark.parametrize(
+    "name,base_path", list(COLLECTION_ENDPOINTS.items()),
+)
+def test_collections_use_ipmi_collection(
+    by_name, name: str, base_path: str,
+) -> None:
+    """Both collections run bin/ipmi-collection with their
+    base path as the sole arg, in native_json mode, and lift
+    the whole Members list + count out of parsed_output."""
+    endpoint = by_name[name]
+    cmd = endpoint["command"]
+    assert cmd["executable"] == "/app/bin/ipmi-collection"
+    assert cmd["args"] == [base_path]
+    output = endpoint["output"]
+    assert output["mode"] == "native_json"
+    assert output["template"]["Members"] == "{parsed_output.Members}"
+    assert (
+        output["template"]["Members@odata.count"]
+        == "{parsed_output.count}"
+    )
+
+
 STATIC_ONLY = {
     "redfish-version",
     "service-root",
     "odata-root",
-    "systems-collection",
-    "chassis-collection",
     "chassis",
 }
 
@@ -220,12 +347,12 @@ STATIC_ONLY = {
 def test_static_only_endpoints_run_bin_true(
     by_name, name: str,
 ) -> None:
-    """Static-only endpoints (ServiceRoot, collection
-    envelopes, etc.) ship `/bin/true` as the
-    executable -- the template is the body and no
-    ipmitool runs. If any of these drift to a real
-    shim, we'd be paying an ipmitool round-trip for
-    a response that doesn't need one."""
+    """Static-only endpoints (ServiceRoot, the OData
+    document, the per-member Chassis envelope) ship
+    `/bin/true` as the executable -- the template is the
+    body and no ipmitool runs. If any of these drift to a
+    real shim, we'd be paying a round-trip for a response
+    that doesn't need one."""
     cmd = by_name[name]["command"]
     assert cmd["executable"] == "/bin/true"
 

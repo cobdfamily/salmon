@@ -1,5 +1,13 @@
 #!/bin/sh
-# Reports the current BMC power state as JSON.
+# Reports a BMC's current power state as JSON.
+#
+# Usage:
+#   ipmi-power-status <id>
+#
+# <id> selects the BMC from /app/config/bmcs.yaml (the
+# Redfish member id from the /Systems/{id} route). It's
+# threaded straight through to ipmi-env, which resolves it
+# to the right ipmitool connection args.
 #
 # Output shape:
 #
