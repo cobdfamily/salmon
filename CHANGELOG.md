@@ -4,6 +4,25 @@ All notable changes to salmon. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com); dates
 are ISO 8601 in UTC.
 
+## [1.0.1] -- 2026-06-01
+
+### Fixed
+
+- **`/redfish/v1/Chassis/{id}/Power` and `/Thermal` returned 502.**
+  The `ipmi-sensors-power` / `ipmi-sensors-thermal` shims passed the
+  BMC id to their python parser with a `SALMON_BMC_ID="$1" ipmitool
+  ... | python3` prefix — but a `VAR=x cmd1 | cmd2` assignment scopes
+  `VAR` to `cmd1` (ipmitool) only, so the parser on the right of the
+  pipe hit `KeyError` on `os.environ["SALMON_BMC_ID"]` and exited
+  non-zero (→ 502). Now `export SALMON_BMC_ID="$1"` before the
+  pipeline so it reaches the parser. (PowerState / Reset were
+  unaffected — their parsers don't read the id.) Surfaced by the
+  e2e suite against the 1.0.0 image.
+
+### Changed
+
+- `api.version` `1.0.0 -> 1.0.1`.
+
 ## [1.0.0] -- 2026-06-01
 
 ### Changed (multi-host)
@@ -181,6 +200,7 @@ over `ipmitool`. See git history for the complete
 0.1.x feature set; it lives at tag `v0.1.0` on the
 repo.
 
+[1.0.1]: https://github.com/cobdfamily/salmon/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/cobdfamily/salmon/compare/v0.3.1...v1.0.0
 [0.3.1]: https://github.com/cobdfamily/salmon/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/cobdfamily/salmon/compare/v0.2.0...v0.3.0

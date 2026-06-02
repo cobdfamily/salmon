@@ -29,9 +29,13 @@ set -eu
 # ipmi-env reads the BMC id from $1; sourcing keeps our $@.
 . /app/bin/ipmi-env
 
-# Hand the id to the parser (via env) so the fragment
-# `@odata.id`s point at /Chassis/<id>/Thermal, not a literal 1.
-SALMON_BMC_ID="$1" ipmitool $IPMITOOL_AUTH sensor list | /usr/local/bin/python3 -c '
+# Export the id so it reaches the python parser on the RIGHT of
+# the pipe: a `VAR=x cmd | other` prefix scopes VAR to the LEFT
+# command (ipmitool) only, so the parser would KeyError on
+# os.environ["SALMON_BMC_ID"]. The id anchors each reading's
+# `@odata.id` at /Chassis/<id>/Thermal, not a literal 1.
+export SALMON_BMC_ID="$1"
+ipmitool $IPMITOOL_AUTH sensor list | /usr/local/bin/python3 -c '
 import json, os, sys
 
 bmc_id = os.environ["SALMON_BMC_ID"]
